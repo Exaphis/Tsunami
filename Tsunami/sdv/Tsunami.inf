@@ -1,0 +1,89 @@
+;
+; Tsunami.inf
+;
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=Sample ; TODO: edit Class
+ClassGuid={78A1C341-4539-11d3-B88D-00C04FAD5171} ; TODO: edit ClassGuid
+Provider=%ManufacturerName%
+CatalogFile=Tsunami.cat
+DriverVer = 11/14/2018,0.24.54.146
+
+[DestinationDirs]
+DefaultDestDir = 12
+Tsunami_Device_CoInstaller_CopyFiles = 11
+
+; ================= Class section =====================
+
+[ClassInstall32]
+Addreg=SampleClassReg
+
+[SampleClassReg]
+HKR,,,0,%ClassName%
+HKR,,Icon,,-5
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+Tsunami.sys  = 1,,
+;
+
+
+;*****************************************
+; Install Section
+;*****************************************
+
+[Manufacturer]
+%ManufacturerName%=Standard,NTamd64
+
+[Standard.NTamd64]
+%Tsunami.DeviceDesc%=Tsunami_Device, Root\Tsunami ; TODO: edit hw-id
+
+[Tsunami_Device.NT]
+CopyFiles=Drivers_Dir
+
+[Drivers_Dir]
+Tsunami.sys
+
+;-------------- Service installation
+[Tsunami_Device.NT.Services]
+AddService = Tsunami,%SPSVCINST_ASSOCSERVICE%, Tsunami_Service_Inst
+
+; -------------- Tsunami driver install sections
+[Tsunami_Service_Inst]
+DisplayName    = %Tsunami.SVCDESC%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 3               ; SERVICE_DEMAND_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %12%\Tsunami.sys
+
+;
+;--- Tsunami_Device Coinstaller installation ------
+;
+
+[Tsunami_Device.NT.CoInstallers]
+AddReg=Tsunami_Device_CoInstaller_AddReg
+CopyFiles=Tsunami_Device_CoInstaller_CopyFiles
+
+[Tsunami_Device_CoInstaller_AddReg]
+;
+
+
+[Tsunami_Device_CoInstaller_CopyFiles]
+;
+
+
+[Tsunami_Device.NT.Wdf]
+KmdfService =  Tsunami, Tsunami_wdfsect
+[Tsunami_wdfsect]
+KmdfLibraryVersion = 1.15
+
+[Strings]
+SPSVCINST_ASSOCSERVICE= 0x00000002
+ManufacturerName="<Your manufacturer name>" ;TODO: Replace with your manufacturer name
+ClassName="Samples" ; TODO: edit ClassName
+DiskName = "Tsunami Installation Disk"
+Tsunami.DeviceDesc = "Tsunami Device"
+Tsunami.SVCDESC = "Tsunami Service"

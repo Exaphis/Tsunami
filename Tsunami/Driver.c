@@ -31,42 +31,55 @@ typedef struct _KERNEL_WRITE_REQUEST
 
 } KERNEL_WRITE_REQUEST, *PKERNEL_WRITE_REQUEST;
 
-NTSTATUS UnloadDriver(PDRIVER_OBJECT pDriverObject);
-NTSTATUS CreateCall(PDEVICE_OBJECT DeviceObject, PIRP irp);
-NTSTATUS CloseCall(PDEVICE_OBJECT DeviceObject, PIRP irp);
-
-NTSTATUS KeReadVirtualMemory(PEPROCESS Process, PVOID SourceAddress, PVOID TargetAddress, SIZE_T Size)
+NTSTATUS KeOperateProcessMemory(PEPROCESS process, PVOID sourceAddress, PVOID targetAddress, SIZE_T size)
 {
-	PSIZE_T Bytes;
-
+	KAPC_STATE apcState;
+	KeStackAttachProcess(process, &apcState);
 	__try {
-		MmCopyVirtualMemory(Process, SourceAddress, PsGetCurrentProcess(), TargetAddress, Size, KernelMode, &Bytes);
-		return STATUS_SUCCESS;
+		RtlCopyMemory(targetAddress, sourceAddress, size);
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {
+		KeUnstackDetachProcess(&apcState);
 		return STATUS_ACCESS_DENIED;
 	}
+	KeUnstackDetachProcess(&apcState);
 }
 
-NTSTATUS KeWriteVirtualMemory(PEPROCESS Process, PVOID SourceAddress, PVOID TargetAddress, SIZE_T Size)
+void UnloadDriver(PDRIVER_OBJECT pDriverObject)
 {
-	PSIZE_T Bytes;
-	__try {
-		MmCopyVirtualMemory(PsGetCurrentProcess(), SourceAddress, Process, TargetAddress, Size, KernelMode, &Bytes);
-		return STATUS_SUCCESS;
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER) {
-		return STATUS_ACCESS_DENIED;
-	}
+#ifdef DEBUG
+	DbgPrintEx(0, 0, "Tsunami unload routine called.\n");
+#endif
+
+	IoDeleteSymbolicLink(&dos);
+	IoDeleteDevice(pDriverObject->DeviceObject);
+}
+
+NTSTATUS TsunamiDispatchCreate(PDEVICE_OBJECT deviceObject, PIRP irp)
+{
+	irp->IoStatus.Status = STATUS_SUCCESS;
+	irp->IoStatus.Information = 0;
+
+	IoCompleteRequest(irp, IO_NO_INCREMENT);
+	return STATUS_SUCCESS;
+}
+
+NTSTATUS TsunamiDispatchClose(PDEVICE_OBJECT deviceObject, PIRP irp)
+{
+	irp->IoStatus.Status = STATUS_SUCCESS;
+	irp->IoStatus.Information = 0;
+
+	IoCompleteRequest(irp, IO_NO_INCREMENT);
+	return STATUS_SUCCESS;
 }
 
 // IOCTL Call Handler function
-NTSTATUS IoControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
+NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 {
-	NTSTATUS Status;
-	ULONG BytesIO = 0;
+	NTSTATUS status;
+	ULONG bytes = 0;
 
-	PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
+	PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(irp);
 
 	// Code received from user space
 	ULONG ControlCode = stack->Parameters.DeviceIoControl.IoControlCode;
@@ -74,51 +87,58 @@ NTSTATUS IoControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 	if (ControlCode == IO_READ_REQUEST)
 	{
 		// Get the input buffer & format it to our struct
-		PKERNEL_READ_REQUEST ReadInput = (PKERNEL_READ_REQUEST)Irp->AssociatedIrp.SystemBuffer;
-		PKERNEL_READ_REQUEST ReadOutput = (PKERNEL_READ_REQUEST)Irp->AssociatedIrp.SystemBuffer;
+		PKERNEL_READ_REQUEST readRequest = (PKERNEL_READ_REQUEST)irp->AssociatedIrp.SystemBuffer;
 
-		PEPROCESS Process;
 		// Get our process
-		if (NT_SUCCESS(PsLookupProcessByProcessId(ReadInput->ProcessId, &Process)))
-			KeReadVirtualMemory(Process, ReadInput->Address, &ReadInput->Response, ReadInput->Size);
+		PEPROCESS process;
+		status = PsLookupProcessByProcessId(readRequest->ProcessId, &process);
 
+		if (NT_SUCCESS(status))
+		{
+			status = KeOperateProcessMemory(process, readRequest->Address, &readRequest->Response, readRequest->Size);
+		}
+			
 #ifdef DEBUG
 		DbgPrintEx(0, 0, "Read:  %lu, 0x%I64X, %lu \n", ReadInput->ProcessId, ReadInput->Address, ReadInput->Size);
 #endif
 
-		Status = STATUS_SUCCESS;
-		BytesIO = sizeof(KERNEL_READ_REQUEST);
+		ObDereferenceObject(process);
+		bytes = sizeof(KERNEL_READ_REQUEST);
 	}
 	else if (ControlCode == IO_WRITE_REQUEST)
 	{
 		// Get the input buffer & format it to our struct
-		PKERNEL_WRITE_REQUEST WriteInput = (PKERNEL_WRITE_REQUEST)Irp->AssociatedIrp.SystemBuffer;
+		PKERNEL_WRITE_REQUEST writeRequest = (PKERNEL_WRITE_REQUEST)irp->AssociatedIrp.SystemBuffer;
 
-		PEPROCESS Process;
 		// Get our process
-		if (NT_SUCCESS(PsLookupProcessByProcessId(WriteInput->ProcessId, &Process)))
-			KeWriteVirtualMemory(Process, &WriteInput->Value, WriteInput->Address, WriteInput->Size);
+		PEPROCESS process;
+		status = PsLookupProcessByProcessId(writeRequest->ProcessId, &process);
 
+		if (NT_SUCCESS(status))
+		{
+			KeOperateProcessMemory(process, &writeRequest->Value, writeRequest->Address, writeRequest->Size);
+		}
+			
 #ifdef DEBUG
 		DbgPrintEx(0, 0, "Write:  %lu, 0x%I64X \n", WriteInput->ProcessId, WriteInput->Address);
 #endif
 
-		Status = STATUS_SUCCESS;
-		BytesIO = sizeof(KERNEL_WRITE_REQUEST);
+		ObDereferenceObject(process);
+		bytes = sizeof(KERNEL_WRITE_REQUEST);
 	}
 	else
 	{
 		// if the code is unknown
-		Status = STATUS_INVALID_PARAMETER;
-		BytesIO = 0;
+		status = STATUS_INVALID_PARAMETER;
+		bytes = 0;
 	}
 
 	// Complete the request
-	Irp->IoStatus.Status = Status;
-	Irp->IoStatus.Information = BytesIO;
-	IoCompleteRequest(Irp, IO_NO_INCREMENT);
-	
-	return Status;
+	irp->IoStatus.Status = status;
+	irp->IoStatus.Information = bytes;
+	IoCompleteRequest(irp, IO_NO_INCREMENT);
+
+	return status;
 }
 
 // Driver Entrypoint
@@ -133,10 +153,10 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 
 	IoCreateDevice(pDriverObject, 0, &dev, FILE_DEVICE_UNKNOWN, FILE_DEVICE_SECURE_OPEN, FALSE, &pDeviceObject);
 	IoCreateSymbolicLink(&dos, &dev);
-	
-	pDriverObject->MajorFunction[IRP_MJ_CREATE] = CreateCall;
-	pDriverObject->MajorFunction[IRP_MJ_CLOSE] = CloseCall;
-	pDriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = IoControl;
+
+	pDriverObject->MajorFunction[IRP_MJ_CREATE] = TsunamiDispatchCreate;
+	pDriverObject->MajorFunction[IRP_MJ_CLOSE] = TsunamiDispatchClose;
+	pDriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = TsunamiDispatchDeviceControl;
 	pDriverObject->DriverUnload = UnloadDriver;
 
 #ifdef DEBUG
@@ -145,32 +165,3 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 
 	return STATUS_SUCCESS;
 }
-
-NTSTATUS UnloadDriver(PDRIVER_OBJECT pDriverObject)
-{
-#ifdef DEBUG
-	DbgPrintEx(0, 0, "Tsunami unload routine called.\n");
-#endif
-
-	IoDeleteSymbolicLink(&dos);
-	IoDeleteDevice(pDriverObject->DeviceObject);
-}
-
-NTSTATUS CreateCall(PDEVICE_OBJECT DeviceObject, PIRP irp)
-{
-	irp->IoStatus.Status = STATUS_SUCCESS;
-	irp->IoStatus.Information = 0;
-
-	IoCompleteRequest(irp, IO_NO_INCREMENT);
-	return STATUS_SUCCESS;
-}
-
-NTSTATUS CloseCall(PDEVICE_OBJECT DeviceObject, PIRP irp)
-{
-	irp->IoStatus.Status = STATUS_SUCCESS;
-	irp->IoStatus.Information = 0;
-
-	IoCompleteRequest(irp, IO_NO_INCREMENT);
-	return STATUS_SUCCESS;
-}
-

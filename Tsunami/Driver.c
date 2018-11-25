@@ -35,14 +35,20 @@ NTSTATUS KeOperateProcessMemory(PEPROCESS process, PVOID sourceAddress, PVOID ta
 {
 	KAPC_STATE apcState;
 	KeStackAttachProcess(process, &apcState);
-	__try {
+
+	__try 
+	{
 		RtlCopyMemory(targetAddress, sourceAddress, size);
 	}
-	__except (EXCEPTION_EXECUTE_HANDLER) {
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
 		KeUnstackDetachProcess(&apcState);
 		return STATUS_ACCESS_DENIED;
 	}
+
 	KeUnstackDetachProcess(&apcState);
+
+	return STATUS_SUCCESS;
 }
 
 void UnloadDriver(PDRIVER_OBJECT pDriverObject)
@@ -76,7 +82,7 @@ NTSTATUS TsunamiDispatchClose(PDEVICE_OBJECT deviceObject, PIRP irp)
 // IOCTL Call Handler function
 NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 {
-	NTSTATUS status;
+	NTSTATUS status = STATUS_UNSUCCESSFUL;
 	ULONG bytes = 0;
 
 	PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(irp);
@@ -97,6 +103,10 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 		{
 			status = KeOperateProcessMemory(process, readRequest->Address, &readRequest->Response, readRequest->Size);
 		}
+		else
+		{
+			status = STATUS_UNSUCCESSFUL;
+		}
 			
 #ifdef DEBUG
 		DbgPrintEx(0, 0, "Read:  %lu, 0x%I64X, %lu \n", ReadInput->ProcessId, ReadInput->Address, ReadInput->Size);
@@ -116,7 +126,11 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 
 		if (NT_SUCCESS(status))
 		{
-			KeOperateProcessMemory(process, &writeRequest->Value, writeRequest->Address, writeRequest->Size);
+			status = KeOperateProcessMemory(process, &writeRequest->Value, writeRequest->Address, writeRequest->Size);
+		}
+		else
+		{
+			status = STATUS_UNSUCCESSFUL;
 		}
 			
 #ifdef DEBUG

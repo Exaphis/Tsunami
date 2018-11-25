@@ -13,22 +13,18 @@ UNICODE_STRING dev, dos; // Driver registry paths
 
 typedef struct _KERNEL_READ_REQUEST
 {
-	ULONG ProcessId;
-
-	ULONGLONG Address;
-	UCHAR Response[8192];
-	ULONG Size;
-
+	ULONG64 processID;
+	ULONG64 address;
+	UCHAR response[8192];
+	SIZE_T size;
 } KERNEL_READ_REQUEST, *PKERNEL_READ_REQUEST;
 
 typedef struct _KERNEL_WRITE_REQUEST
 {
-	ULONG ProcessId;
-
-	ULONGLONG Address;
-	UCHAR Value[8192];
-	ULONG Size;
-
+	ULONG64 processID;
+	ULONG64 address;
+	UCHAR value[8192];
+	SIZE_T size;
 } KERNEL_WRITE_REQUEST, *PKERNEL_WRITE_REQUEST;
 
 NTSTATUS KeOperateProcessMemory(PEPROCESS process, PVOID sourceAddress, PVOID targetAddress, SIZE_T size)
@@ -36,7 +32,7 @@ NTSTATUS KeOperateProcessMemory(PEPROCESS process, PVOID sourceAddress, PVOID ta
 	KAPC_STATE apcState;
 	KeStackAttachProcess(process, &apcState);
 
-	__try 
+	__try
 	{
 		RtlCopyMemory(targetAddress, sourceAddress, size);
 	}
@@ -61,16 +57,7 @@ void UnloadDriver(PDRIVER_OBJECT pDriverObject)
 	IoDeleteDevice(pDriverObject->DeviceObject);
 }
 
-NTSTATUS TsunamiDispatchCreate(PDEVICE_OBJECT deviceObject, PIRP irp)
-{
-	irp->IoStatus.Status = STATUS_SUCCESS;
-	irp->IoStatus.Information = 0;
-
-	IoCompleteRequest(irp, IO_NO_INCREMENT);
-	return STATUS_SUCCESS;
-}
-
-NTSTATUS TsunamiDispatchClose(PDEVICE_OBJECT deviceObject, PIRP irp)
+NTSTATUS TsunamiDispatchDefault(PDEVICE_OBJECT deviceObject, PIRP irp)
 {
 	irp->IoStatus.Status = STATUS_SUCCESS;
 	irp->IoStatus.Information = 0;
@@ -88,26 +75,26 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 	PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(irp);
 
 	// Code received from user space
-	ULONG ControlCode = stack->Parameters.DeviceIoControl.IoControlCode;
+	ULONG controlCode = stack->Parameters.DeviceIoControl.IoControlCode;
 
-	if (ControlCode == IO_READ_REQUEST)
+	if (controlCode == IO_READ_REQUEST)
 	{
 		// Get the input buffer & format it to our struct
 		PKERNEL_READ_REQUEST readRequest = (PKERNEL_READ_REQUEST)irp->AssociatedIrp.SystemBuffer;
 
 		// Get our process
 		PEPROCESS process;
-		status = PsLookupProcessByProcessId(readRequest->ProcessId, &process);
+		status = PsLookupProcessByProcessId(readRequest->processID, &process);
 
 		if (NT_SUCCESS(status))
 		{
-			status = KeOperateProcessMemory(process, readRequest->Address, &readRequest->Response, readRequest->Size);
+			status = KeOperateProcessMemory(process, readRequest->address, &readRequest->response, readRequest->size);
 		}
 		else
 		{
 			status = STATUS_UNSUCCESSFUL;
 		}
-			
+
 #ifdef DEBUG
 		DbgPrintEx(0, 0, "Read:  %lu, 0x%I64X, %lu \n", ReadInput->ProcessId, ReadInput->Address, ReadInput->Size);
 #endif
@@ -115,24 +102,24 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 		ObDereferenceObject(process);
 		bytes = sizeof(KERNEL_READ_REQUEST);
 	}
-	else if (ControlCode == IO_WRITE_REQUEST)
+	else if (controlCode == IO_WRITE_REQUEST)
 	{
 		// Get the input buffer & format it to our struct
 		PKERNEL_WRITE_REQUEST writeRequest = (PKERNEL_WRITE_REQUEST)irp->AssociatedIrp.SystemBuffer;
 
 		// Get our process
 		PEPROCESS process;
-		status = PsLookupProcessByProcessId(writeRequest->ProcessId, &process);
+		status = PsLookupProcessByProcessId(writeRequest->processID, &process);
 
 		if (NT_SUCCESS(status))
 		{
-			status = KeOperateProcessMemory(process, &writeRequest->Value, writeRequest->Address, writeRequest->Size);
+			status = KeOperateProcessMemory(process, &writeRequest->value, writeRequest->address, writeRequest->size);
 		}
 		else
 		{
 			status = STATUS_UNSUCCESSFUL;
 		}
-			
+
 #ifdef DEBUG
 		DbgPrintEx(0, 0, "Write:  %lu, 0x%I64X \n", WriteInput->ProcessId, WriteInput->Address);
 #endif
@@ -168,8 +155,10 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	IoCreateDevice(pDriverObject, 0, &dev, FILE_DEVICE_UNKNOWN, FILE_DEVICE_SECURE_OPEN, FALSE, &pDeviceObject);
 	IoCreateSymbolicLink(&dos, &dev);
 
-	pDriverObject->MajorFunction[IRP_MJ_CREATE] = TsunamiDispatchCreate;
-	pDriverObject->MajorFunction[IRP_MJ_CLOSE] = TsunamiDispatchClose;
+	for (int i = 0; i < IRP_MJ_MAXIMUM_FUNCTION; i++)
+	{
+		pDriverObject->MajorFunction[i] = TsunamiDispatchDefault;
+	}
 	pDriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = TsunamiDispatchDeviceControl;
 	pDriverObject->DriverUnload = UnloadDriver;
 

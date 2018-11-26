@@ -96,7 +96,7 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 		}
 
 #ifdef DEBUG
-		DbgPrintEx(0, 0, "Read:  %lu, 0x%I64X, %lu \n", ReadInput->ProcessId, ReadInput->Address, ReadInput->Size);
+		DbgPrintEx(0, 0, "Read:  %lu, 0x%I64X, %lu \n", readRequest->processID, readRequest->address, readRequest->size);
 #endif
 
 		ObDereferenceObject(process);
@@ -121,7 +121,7 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 		}
 
 #ifdef DEBUG
-		DbgPrintEx(0, 0, "Write:  %lu, 0x%I64X \n", WriteInput->ProcessId, WriteInput->Address);
+		DbgPrintEx(0, 0, "Write:  %lu, 0x%I64X \n", writeRequest->processID, writeRequest->address);
 #endif
 
 		ObDereferenceObject(process);

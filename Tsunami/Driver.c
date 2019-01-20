@@ -1,6 +1,4 @@
-#include "ntos.h"
-
-// #define DEBUG 1
+#include <ntifs.h>
 
 // Request to read virtual user memory (memory of a program) from kernel space
 #define IO_READ_REQUEST CTL_CODE(FILE_DEVICE_UNKNOWN, 0x0701, METHOD_BUFFERED, FILE_SPECIAL_ACCESS)
@@ -59,6 +57,8 @@ void UnloadDriver(PDRIVER_OBJECT pDriverObject)
 
 NTSTATUS TsunamiDispatchDefault(PDEVICE_OBJECT deviceObject, PIRP irp)
 {
+	UNREFERENCED_PARAMETER(deviceObject);
+
 	irp->IoStatus.Status = STATUS_SUCCESS;
 	irp->IoStatus.Information = 0;
 
@@ -69,6 +69,8 @@ NTSTATUS TsunamiDispatchDefault(PDEVICE_OBJECT deviceObject, PIRP irp)
 // IOCTL Call Handler function
 NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 {
+	UNREFERENCED_PARAMETER(deviceObject);
+
 	NTSTATUS status = STATUS_UNSUCCESSFUL;
 	ULONG bytes = 0;
 
@@ -84,11 +86,11 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 
 		// Get our process
 		PEPROCESS process;
-		status = PsLookupProcessByProcessId(readRequest->processID, &process);
+		status = PsLookupProcessByProcessId((HANDLE)readRequest->processID, &process);
 
 		if (NT_SUCCESS(status))
 		{
-			status = KeOperateProcessMemory(process, readRequest->address, &readRequest->response, readRequest->size);
+			status = KeOperateProcessMemory(process, (PVOID)readRequest->address, &readRequest->response, readRequest->size);
 		}
 		else
 		{
@@ -109,11 +111,11 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 
 		// Get our process
 		PEPROCESS process;
-		status = PsLookupProcessByProcessId(writeRequest->processID, &process);
+		status = PsLookupProcessByProcessId((HANDLE)writeRequest->processID, &process);
 
 		if (NT_SUCCESS(status))
 		{
-			status = KeOperateProcessMemory(process, &writeRequest->value, writeRequest->address, writeRequest->size);
+			status = KeOperateProcessMemory(process, &writeRequest->value, (PVOID)writeRequest->address, writeRequest->size);
 		}
 		else
 		{
@@ -145,6 +147,8 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 // Driver Entrypoint
 NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath)
 {
+	UNREFERENCED_PARAMETER(pRegistryPath);
+
 #ifdef DEBUG
 	DbgPrintEx(0, 0, "Tsunami load routine called...\n");
 #endif

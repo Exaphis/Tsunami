@@ -15,8 +15,8 @@ UNICODE_STRING dev, dos; // Driver registry paths
 
 PVOID pSharedSection;
 HANDLE hSection;
-
-PVOID poolAddress;
+PMDL pMDL;
+PVOID pSharedSectionMDL;
 
 typedef struct _KERNEL_READ_REQUEST
 {
@@ -58,14 +58,15 @@ void UnloadDriver(PDRIVER_OBJECT pDriverObject)
 	DbgPrintEx(0, 0, "Tsunami unload routine called.\n");
 #endif
 
-	ExFreePoolWithTag(poolAddress, 'looP');
-
 	if (pSharedSection) {
 		ZwUnmapViewOfSection(NtCurrentProcess(), pSharedSection);
 	}
 	if (hSection) {
 		ZwClose(hSection);
 	}
+
+	MmUnlockPages(pMDL);
+	IoFreeMdl(pMDL);
 
 	IoDeleteSymbolicLink(&dos);
 	IoDeleteDevice(pDriverObject->DeviceObject);
@@ -91,28 +92,6 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 	ULONG bytes = 0;
 	PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(irp);
 
-	// Unmap shared section if already mapped
-	if (pSharedSection) {
-		ZwUnmapViewOfSection(ZwCurrentProcess(), pSharedSection);
-	}
-
-	// Map shared section
-	SIZE_T ulViewSize = 0;
-	status = ZwMapViewOfSection(hSection, ZwCurrentProcess(), &pSharedSection, 0, SHARED_MEMORY_NUM_BYTES, NULL, &ulViewSize, ViewShare, 0, PAGE_READWRITE | PAGE_NOCACHE);
-	if (status != STATUS_SUCCESS)
-	{
-#ifdef DEBUG
-		DbgPrintEx(0, 0, "ZwMapViewOfSection fail! Status: %p\n", status);
-#endif
-		ZwClose(hSection);
-
-		irp->IoStatus.Status = status;
-		irp->IoStatus.Information = bytes;
-		IoCompleteRequest(irp, IO_NO_INCREMENT);
-	}
-#ifdef DEBUG
-	DbgPrintEx(0, 0, "ZwMapViewOfSection completed!\n");
-#endif
 	// Code received from user space
 	ULONG controlCode = stack->Parameters.DeviceIoControl.IoControlCode;
 
@@ -127,15 +106,7 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 
 		if (NT_SUCCESS(status))
 		{
-			status = KeCopyMemory(process, (PVOID)readRequest->address, poolAddress, readRequest->size);
-			if (NT_SUCCESS(status))
-			{
-				RtlCopyMemory(pSharedSection, poolAddress, readRequest->size);
-			}
-		}
-		else
-		{
-			status = STATUS_UNSUCCESSFUL;
+			status = KeCopyMemory(process, (PVOID)readRequest->address, pSharedSectionMDL, readRequest->size);
 		}
 
 #ifdef DEBUG
@@ -154,15 +125,9 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 		PEPROCESS process;
 		status = PsLookupProcessByProcessId((HANDLE)writeRequest->processID, &process);
 
-		RtlCopyMemory(poolAddress, pSharedSection, writeRequest->size);
-
 		if (NT_SUCCESS(status))
 		{
-			status = KeCopyMemory(process, poolAddress, (PVOID)writeRequest->address, writeRequest->size);
-		}
-		else
-		{
-			status = STATUS_UNSUCCESSFUL;
+			status = KeCopyMemory(process, pSharedSectionMDL, (PVOID)writeRequest->address, writeRequest->size);
 		}
 
 #ifdef DEBUG
@@ -189,6 +154,7 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 
 NTSTATUS CreateSharedMemory()
 {
+	// Source: https://raw.githubusercontent.com/mq1n/EasyRing0/master/Tutorial_6_ShareMem_Communication_SYS/main.c
 #ifdef DEBUG
 	DbgPrintEx(0, 0, "Creating shared memory...\n");
 #endif
@@ -267,20 +233,68 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	pDriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = TsunamiDispatchDeviceControl;
 	pDriverObject->DriverUnload = UnloadDriver;
 
+	pDeviceObject->Flags |= DO_BUFFERED_IO;
+
+	NTSTATUS status;
+
+	// Create shared section
 #ifdef DEBUG
 	DbgPrintEx(0, 0, "Calling CreateSharedMemory...\n");
 #endif
-	CreateSharedMemory();
+
+	status = CreateSharedMemory();
+
+	if (!NT_SUCCESS(status)) {
 #ifdef DEBUG
-	DbgPrintEx(0, 0, "Shared memory created, address: %p\n", pSharedSection);
+		DbgPrintEx(0, 0, "CreateSharedMemory fail!");
+#endif
+		return STATUS_DRIVER_UNABLE_TO_LOAD;
+	}
+
+#ifdef DEBUG
+	DbgPrintEx(0, 0, "Shared memory created.");
 #endif
 
-	poolAddress = ExAllocatePoolWithTag(NonPagedPool, SHARED_MEMORY_NUM_BYTES, 'looP');
+	// Map shared section
+	SIZE_T ulViewSize = 0;
+	status = ZwMapViewOfSection(hSection, ZwCurrentProcess(), &pSharedSection, 0, SHARED_MEMORY_NUM_BYTES, NULL, &ulViewSize, ViewShare, 0, PAGE_READWRITE | PAGE_NOCACHE);
+	if (!NT_SUCCESS(status))
+	{
 #ifdef DEBUG
-	DbgPrintEx(0, 0, "Pool buffer created, address: %p\n", poolAddress);
+		DbgPrintEx(0, 0, "ZwMapViewOfSection fail! Status: %p\n", status);
 #endif
 
-	pDeviceObject->Flags |= DO_BUFFERED_IO;
+		return STATUS_DRIVER_UNABLE_TO_LOAD;
+	}
+#ifdef DEBUG
+	DbgPrintEx(0, 0, "ZwMapViewOfSection completed!\n");
+#endif
+
+	// Allocate MDL for shared section
+	pMDL = IoAllocateMdl(pSharedSection, SHARED_MEMORY_NUM_BYTES, FALSE, FALSE, NULL);
+	if (pMDL == NULL) {
+#ifdef DEBUG
+		DbgPrintEx(0, 0, "IoAllocateMdl fail!");
+#endif
+
+		ZwUnmapViewOfSection(ZwCurrentProcess(), pSharedSection);
+
+		return STATUS_DRIVER_UNABLE_TO_LOAD;
+	}
+
+	// Probe and lock MDL
+	MmProbeAndLockPages(pMDL, KernelMode, IoModifyAccess);
+	// Get system address of MDL
+	pSharedSectionMDL = MmGetSystemAddressForMdlSafe(pMDL, NormalPagePriority);
+	if (pSharedSectionMDL == NULL) {
+#ifdef DEBUG
+		DbgPrintEx(0, 0, "MmGetSystemAddressForMdlSafe fail!");
+#endif
+		IoFreeMdl(pMDL);
+		ZwUnmapViewOfSection(ZwCurrentProcess(), pSharedSection);
+
+		return STATUS_DRIVER_UNABLE_TO_LOAD;
+	}
 
 #ifdef DEBUG
 	DbgPrintEx(0, 0, "Tsunami loaded.\n");

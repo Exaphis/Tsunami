@@ -256,24 +256,24 @@ NTSTATUS GrantAccess(HANDLE hSection, IN PACL StandardAcl)
 	NTSTATUS ntStatus = STATUS_UNSUCCESSFUL;
 	ULONG ulNeedSize = 0;
 
-	ntStatus = NtQuerySecurityObject(hSection, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, NULL, 0, &ulNeedSize);
+	ntStatus = ZwQuerySecurityObject(hSection, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, NULL, 0, &ulNeedSize);
 	if (ntStatus != STATUS_BUFFER_TOO_SMALL)
 	{
-		DbgPrint("NtQuerySecurityObject fail! Status: %p Need size: %u\n", ntStatus, ulNeedSize);
+		DbgPrintEx(0, 0, "ZwQuerySecurityObject fail! Status: %p Need size: %u\n", ntStatus, ulNeedSize);
 		return ntStatus;
 	}
 
 	PSECURITY_DESCRIPTOR sd = ExAllocatePoolWithTag(PagedPool, ulNeedSize, 'Tmhs');
 	if (!sd)
 	{
-		DbgPrint("ExAllocatePoolWithTag fail! Status: %p\n", ntStatus);
+		DbgPrintEx(0, 0, "ExAllocatePoolWithTag fail! Status: %p\n", ntStatus);
 		return STATUS_INSUFFICIENT_RESOURCES;
 	}
 
-	ntStatus = NtQuerySecurityObject(hSection, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, sd, ulNeedSize, &ulNeedSize);
+	ntStatus = ZwQuerySecurityObject(hSection, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, sd, ulNeedSize, &ulNeedSize);
 	if (!NT_SUCCESS(ntStatus))
 	{
-		DbgPrint("NtQuerySecurityObject fail! Status: %p\n", ntStatus);
+		DbgPrintEx(0, 0, "ZwQuerySecurityObject fail! Status: %p\n", ntStatus);
 		ExFreePool(sd);
 		return ntStatus;
 	}
@@ -283,7 +283,7 @@ NTSTATUS GrantAccess(HANDLE hSection, IN PACL StandardAcl)
 	ntStatus = RtlGetDaclSecurityDescriptor(sd, &bDaclPresent, &pACL, &bDaclDefaulted);
 	if (!NT_SUCCESS(ntStatus))
 	{
-		DbgPrint("RtlGetDaclSecurityDescriptor fail! Status: %p\n", ntStatus);
+		DbgPrintEx(0, 0, "RtlGetDaclSecurityDescriptor fail! Status: %p\n", ntStatus);
 		ExFreePool(sd);
 		return ntStatus;
 	}
@@ -293,7 +293,7 @@ NTSTATUS GrantAccess(HANDLE hSection, IN PACL StandardAcl)
 	ntStatus = RtlGetOwnerSecurityDescriptor(sd, &pSid, &bOwnerDefaulted);
 	if (!NT_SUCCESS(ntStatus))
 	{
-		DbgPrint("RtlGetOwnerSecurityDescriptor fail! Status: %p\n", ntStatus);
+		DbgPrintEx(0, 0, "RtlGetOwnerSecurityDescriptor fail! Status: %p\n", ntStatus);
 		ExFreePool(sd);
 		return ntStatus;
 	}
@@ -341,7 +341,7 @@ NTSTATUS GrantAccess(HANDLE hSection, IN PACL StandardAcl)
 	ntStatus = RtlSetOwnerSecurityDescriptor(sd, pAdminSid, FALSE);
 	if (!NT_SUCCESS(ntStatus))
 	{
-		DbgPrint("RtlSetOwnerSecurityDescriptor fail! Status: %p\n", ntStatus);
+		DbgPrintEx(0, 0, "RtlSetOwnerSecurityDescriptor fail! Status: %p\n", ntStatus);
 		ExFreePool(sd);
 		return ntStatus;
 	}
@@ -349,22 +349,22 @@ NTSTATUS GrantAccess(HANDLE hSection, IN PACL StandardAcl)
 	ntStatus = RtlSetDaclSecurityDescriptor(sd, TRUE, StandardAcl, FALSE);
 	if (!NT_SUCCESS(ntStatus))
 	{
-		DbgPrint("RtlSetDaclSecurityDescriptor fail! Status: %p\n", ntStatus);
+		DbgPrintEx(0, 0, "RtlSetDaclSecurityDescriptor fail! Status: %p\n", ntStatus);
 		ExFreePool(sd);
 		return ntStatus;
 	}
 
 	if (!RtlValidSecurityDescriptor(sd))
 	{
-		DbgPrint("RtlSetOwnerSecurityDescriptor fail! Status: %p\n", ntStatus);
+		DbgPrintEx(0, 0, "RtlSetOwnerSecurityDescriptor fail! Status: %p\n", ntStatus);
 		ExFreePool(sd);
 		return STATUS_UNSUCCESSFUL;
 	}
 
-	ntStatus = NtSetSecurityObject(hSection, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, sd);
+	ntStatus = ZwSetSecurityObject(hSection, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, sd);
 	if (!NT_SUCCESS(ntStatus))
 	{
-		DbgPrint("NtSetSecurityObject fail! Status: %p\n", ntStatus);
+		DbgPrintEx(0, 0, "ZwSetSecurityObject fail! Status: %p\n", ntStatus);
 		ExFreePool(sd);
 		return ntStatus;
 	}

@@ -152,6 +152,7 @@
       <BrowseInformation>true</BrowseInformation>
       <CompileAs>CompileAsC</CompileAs>
       <Optimization>MaxSpeed</Optimization>
+      <AdditionalOptions>/GS- %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SuppressStartupBanner>false</SuppressStartupBanner>

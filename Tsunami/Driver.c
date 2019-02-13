@@ -1,6 +1,13 @@
 #include <ntifs.h>
 #include "SharedMemoryTools.h"
 
+typedef NTSTATUS (*PDRIVER_INITIALIZE) (IN struct _DRIVER_OBJECT *DriverObject, IN PUNICODE_STRING RegistryPath);
+
+NTKERNELAPI NTSTATUS IoCreateDriver(
+	IN PUNICODE_STRING DriverName, 
+	IN PDRIVER_INITIALIZE InitializationFunction
+);
+
 // Request to read virtual user memory (memory of a program) from kernel space
 #define IO_READ_REQUEST CTL_CODE(FILE_DEVICE_UNKNOWN, 0x203, METHOD_BUFFERED, FILE_SPECIAL_ACCESS)
 
@@ -15,8 +22,6 @@ UNICODE_STRING dev, dos; // Driver registry paths
 
 PVOID pSharedSection;
 HANDLE hSection;
-PMDL pMDL;
-PVOID pSharedSectionMDL;
 
 typedef struct _KERNEL_READ_REQUEST
 {
@@ -58,15 +63,23 @@ void UnloadDriver(PDRIVER_OBJECT pDriverObject)
 	DbgPrintEx(0, 0, "Tsunami unload routine called.\n");
 #endif
 
+	// Unmap view of section in kernel address space
 	if (pSharedSection) {
-		ZwUnmapViewOfSection(NtCurrentProcess(), pSharedSection);
-	}
-	if (hSection) {
-		ZwClose(hSection);
+		if (!NT_SUCCESS(MmUnmapViewInSystemSpace(pSharedSection))) {
+			DbgPrintEx(0, 0, "MmUnmapViewInSystemSpace failed.\n");
+		}
+#ifdef DEBUG
+		DbgPrintEx(0, 0, "Shared section unmapped.\n");
+#endif
 	}
 
-	MmUnlockPages(pMDL);
-	IoFreeMdl(pMDL);
+	// Close handle to section
+	if (hSection) {
+		ZwClose(hSection);
+#ifdef DEBUG
+		DbgPrintEx(0, 0, "Handle to section closed.\n");
+#endif
+	}
 
 	IoDeleteSymbolicLink(&dos);
 	IoDeleteDevice(pDriverObject->DeviceObject);
@@ -106,11 +119,12 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 
 		if (NT_SUCCESS(status))
 		{
-			status = KeCopyMemory(process, (PVOID)readRequest->address, pSharedSectionMDL, readRequest->size);
+			status = KeCopyMemory(process, (PVOID)readRequest->address, pSharedSection, readRequest->size);
 		}
 
 #ifdef DEBUG
 		DbgPrintEx(0, 0, "Read:  %lu, 0x%I64X, %lu \n", readRequest->processID, readRequest->address, readRequest->size);
+		DbgPrintEx(0, 0, "Status: %p\n", status);
 #endif
 
 		ObDereferenceObject(process);
@@ -127,11 +141,12 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 
 		if (NT_SUCCESS(status))
 		{
-			status = KeCopyMemory(process, pSharedSectionMDL, (PVOID)writeRequest->address, writeRequest->size);
+			status = KeCopyMemory(process, pSharedSection, (PVOID)writeRequest->address, writeRequest->size);
 		}
 
 #ifdef DEBUG
 		DbgPrintEx(0, 0, "Write:  %lu, 0x%I64X, %lu \n", writeRequest->processID, writeRequest->address, writeRequest->size);
+		DbgPrintEx(0, 0, "Status: %p\n", status);
 #endif
 
 		ObDereferenceObject(process);
@@ -211,7 +226,7 @@ NTSTATUS CreateSharedMemory()
 	return ntStatus;
 }
 
-// Driver Entrypoint
+// Real Driver entrypoint
 NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath)
 {
 	UNREFERENCED_PARAMETER(pRegistryPath);
@@ -231,70 +246,45 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 		pDriverObject->MajorFunction[i] = TsunamiDispatchDefault;
 	}
 	pDriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = TsunamiDispatchDeviceControl;
-	pDriverObject->DriverUnload = UnloadDriver;
+	pDriverObject->DriverUnload = UnloadDriver; // No driver unload, using drvmap!
 
 	pDeviceObject->Flags |= DO_BUFFERED_IO;
+	pDeviceObject->Flags &= ~DO_DEVICE_INITIALIZING;
 
 	NTSTATUS status;
 
 	// Create shared section
-#ifdef DEBUG
-	DbgPrintEx(0, 0, "Calling CreateSharedMemory...\n");
-#endif
-
 	status = CreateSharedMemory();
 
 	if (!NT_SUCCESS(status)) {
-#ifdef DEBUG
-		DbgPrintEx(0, 0, "CreateSharedMemory fail!");
-#endif
+		DbgPrintEx(0, 0, "CreateSharedMemory fail!\n");
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
 
 #ifdef DEBUG
-	DbgPrintEx(0, 0, "Shared memory created.");
+	DbgPrintEx(0, 0, "Shared memory created.\n");
 #endif
 
-	// Map shared section
+	// Get pointer to shared section in context
+	PVOID pContextSharedSection;
+	ObReferenceObjectByHandle(hSection, SECTION_ALL_ACCESS, NULL, KernelMode, &pContextSharedSection, NULL);
+
+	// Map shared section in context to system's address space so it can be accessed anywhere
 	SIZE_T ulViewSize = 0;
-	status = ZwMapViewOfSection(hSection, ZwCurrentProcess(), &pSharedSection, 0, SHARED_MEMORY_NUM_BYTES, NULL, &ulViewSize, ViewShare, 0, PAGE_READWRITE | PAGE_NOCACHE);
+	status = MmMapViewInSystemSpace(pContextSharedSection, &pSharedSection, &ulViewSize);
 	if (!NT_SUCCESS(status))
 	{
-#ifdef DEBUG
-		DbgPrintEx(0, 0, "ZwMapViewOfSection fail! Status: %p\n", status);
-#endif
+		DbgPrintEx(0, 0, "MmMapViewInSystemSpace fail! Status: %p\n", status);
 
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
 #ifdef DEBUG
-	DbgPrintEx(0, 0, "ZwMapViewOfSection completed!\n");
+	DbgPrintEx(0, 0, "MmMapViewInSystemSpace completed!\n");
+	DbgPrintEx(0, 0, "pSharedSection = 0x%p\n", pSharedSection);
 #endif
 
-	// Allocate MDL for shared section
-	pMDL = IoAllocateMdl(pSharedSection, SHARED_MEMORY_NUM_BYTES, FALSE, FALSE, NULL);
-	if (pMDL == NULL) {
-#ifdef DEBUG
-		DbgPrintEx(0, 0, "IoAllocateMdl fail!");
-#endif
-
-		ZwUnmapViewOfSection(ZwCurrentProcess(), pSharedSection);
-
-		return STATUS_DRIVER_UNABLE_TO_LOAD;
-	}
-
-	// Probe and lock MDL
-	MmProbeAndLockPages(pMDL, KernelMode, IoModifyAccess);
-	// Get system address of MDL
-	pSharedSectionMDL = MmGetSystemAddressForMdlSafe(pMDL, NormalPagePriority);
-	if (pSharedSectionMDL == NULL) {
-#ifdef DEBUG
-		DbgPrintEx(0, 0, "MmGetSystemAddressForMdlSafe fail!");
-#endif
-		IoFreeMdl(pMDL);
-		ZwUnmapViewOfSection(ZwCurrentProcess(), pSharedSection);
-
-		return STATUS_DRIVER_UNABLE_TO_LOAD;
-	}
+	// Dereference shared section pointer
+	ObDereferenceObject(pContextSharedSection);
 
 #ifdef DEBUG
 	DbgPrintEx(0, 0, "Tsunami loaded.\n");
@@ -302,3 +292,13 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 
 	return STATUS_SUCCESS;
 }
+
+// Fake Driver entrypoint
+//NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath) {
+//	UNREFERENCED_PARAMETER(pDriverObject);
+//	UNREFERENCED_PARAMETER(pRegistryPath);
+//
+//	UNICODE_STRING drvName;
+//	RtlInitUnicodeString(&drvName, L"\\Driver\\tsunami");
+//	return IoCreateDriver(&drvName, &DriverInitialize);
+//}

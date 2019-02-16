@@ -37,45 +37,24 @@ typedef struct _KERNEL_WRITE_REQUEST
 	SIZE_T size;
 } KERNEL_WRITE_REQUEST, *PKERNEL_WRITE_REQUEST;
 
-NTSTATUS KeCopyMemory(PEPROCESS process, PVOID sourceAddress, PVOID targetAddress, SIZE_T size)
+NTSTATUS CopyVirtualMemory(PEPROCESS process, PVOID sourceAddress, PVOID targetAddress, SIZE_T size, BOOLEAN write)
 {
 	KAPC_STATE apcState;
 	KeStackAttachProcess(process, &apcState);
+
+	// Secure user virtual address range
+	HANDLE hMemory = MmSecureVirtualMemory(write ? targetAddress : sourceAddress, size, write ? PAGE_READWRITE : PAGE_READONLY);
+	if (!hMemory) {
+		KeUnstackDetachProcess(&apcState);
+		return STATUS_INVALID_ADDRESS;
+	}
+
 	RtlCopyMemory(targetAddress, sourceAddress, size);
+	MmUnsecureVirtualMemory(hMemory);
+
 	KeUnstackDetachProcess(&apcState);
 
 	return STATUS_SUCCESS;
-}
-
-BOOLEAN IsAddressAccessible(PEPROCESS process, ULONG64 targetAddress, SIZE_T size, BOOLEAN writable) {
-	NTSTATUS status;
-
-	HANDLE hProcess;
-	status = ObOpenObjectByPointer(process, OBJ_KERNEL_HANDLE, NULL, 0, 0, KernelMode, &hProcess);
-	if (!NT_SUCCESS(status)) {
-		return FALSE;
-	}
-
-	MEMORY_BASIC_INFORMATION mbi;
-	status = ZwQueryVirtualMemory(hProcess, (PVOID)targetAddress, MemoryBasicInformation, &mbi, sizeof(mbi), NULL);
-	ZwClose(hProcess);
-	if (!NT_SUCCESS(status)) {
-		return FALSE;
-	}
-
-	if (mbi.State != MEM_COMMIT)
-		return FALSE;
-
-	if (mbi.Protect == PAGE_NOACCESS || mbi.Protect == PAGE_EXECUTE)
-		return FALSE;
-
-	if (writable && (mbi.Protect == PAGE_EXECUTE_READ || mbi.Protect == PAGE_READONLY))
-		return FALSE;
-
-	if (targetAddress + size > (ULONG64)mbi.BaseAddress + mbi.RegionSize)
-		return FALSE;
-
-	return TRUE;
 }
 
 void UnloadDriver(PDRIVER_OBJECT pDriverObject)
@@ -135,10 +114,6 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 		PKERNEL_READ_REQUEST readRequest = (PKERNEL_READ_REQUEST)irp->AssociatedIrp.SystemBuffer;
 		bytes = sizeof(KERNEL_READ_REQUEST);
 
-		// Raise IRQL to APC_LEVEL so address validity does not change between checking and accessing
-		KIRQL originalIRQL;
-		KeRaiseIrql(APC_LEVEL, &originalIRQL);
-
 #ifdef DEBUG
 		DbgPrintEx(0, 0, "[+] Read: %lu, 0x%I64X, %lu \n", readRequest->processID, readRequest->address, readRequest->size);
 #endif
@@ -149,14 +124,12 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 
 		if (NT_SUCCESS(status))
 		{
-			if (IsAddressAccessible(process, readRequest->address, readRequest->size, FALSE)) {
-				status = KeCopyMemory(process, (PVOID)readRequest->address, pSharedSection, readRequest->size);
-				ObDereferenceObject(process);
-			}
+			status = CopyVirtualMemory(process, (PVOID)readRequest->address, pSharedSection, readRequest->size, FALSE);
+			ObDereferenceObject(process);
+
 #ifdef DEBUG
-			else {
-				DbgPrintEx(0, 0, "[-] Address inaccessible.");
-				status = STATUS_INVALID_ADDRESS;
+			if (!NT_SUCCESS(status)) {
+				DbgPrintEx(0, 0, "[-] KeCopyMemory failed. Status: %p\n", status);
 			}
 #endif
 		}
@@ -165,19 +138,12 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 			DbgPrintEx(0, 0, "[-] PsLookupProcessByProcessId failed. Status: %p\n", status);
 		}
 #endif
-
-		// Lower IRQL to original
-		KeLowerIrql(originalIRQL);
 	}
 	else if (controlCode == IO_WRITE_REQUEST)
 	{
 		// Get the input buffer & format it to our struct
 		PKERNEL_WRITE_REQUEST writeRequest = (PKERNEL_WRITE_REQUEST)irp->AssociatedIrp.SystemBuffer;
 		bytes = sizeof(KERNEL_WRITE_REQUEST);
-
-		// Raise IRQL to APC_LEVEL so address validity does not change between checking and accessing
-		KIRQL originalIRQL;
-		KeRaiseIrql(APC_LEVEL, &originalIRQL);
 
 #ifdef DEBUG
 		DbgPrintEx(0, 0, "[+] Write: %lu, 0x%I64X, %lu \n", writeRequest->processID, writeRequest->address, writeRequest->size);
@@ -189,14 +155,11 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 
 		if (NT_SUCCESS(status))
 		{
-			if (IsAddressAccessible(process, writeRequest->address, writeRequest->size, TRUE)) {
-				status = KeCopyMemory(process, pSharedSection, (PVOID)writeRequest->address, writeRequest->size);
-				ObDereferenceObject(process);
-			}
+			status = CopyVirtualMemory(process, pSharedSection, (PVOID)writeRequest->address, writeRequest->size, TRUE);
+			ObDereferenceObject(process);
 #ifdef DEBUG
-			else {
-				DbgPrintEx(0, 0, "[-] Address inaccessible.");
-				status = STATUS_INVALID_ADDRESS;
+			if (!NT_SUCCESS(status)) {
+				DbgPrintEx(0, 0, "[-] KeCopyMemory failed. Status: %p\n", status);
 			}
 #endif
 		}
@@ -205,9 +168,6 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 			DbgPrintEx(0, 0, "[-] PsLookupProcessByProcessId failed. Status: %p\n", status);
 		}
 #endif
-
-		// Lower IRQL to original
-		KeLowerIrql(originalIRQL);
 	}
 	else
 	{

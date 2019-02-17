@@ -129,7 +129,7 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 
 #ifdef DEBUG
 			if (!NT_SUCCESS(status)) {
-				DbgPrintEx(0, 0, "[-] KeCopyMemory failed. Status: %p\n", status);
+				DbgPrintEx(0, 0, "[-] CopyVirtualMemory failed. Status: %p\n", status);
 			}
 #endif
 		}
@@ -159,7 +159,7 @@ NTSTATUS TsunamiDispatchDeviceControl(PDEVICE_OBJECT deviceObject, PIRP irp)
 			ObDereferenceObject(process);
 #ifdef DEBUG
 			if (!NT_SUCCESS(status)) {
-				DbgPrintEx(0, 0, "[-] KeCopyMemory failed. Status: %p\n", status);
+				DbgPrintEx(0, 0, "[-] CopyVirtualMemory failed. Status: %p\n", status);
 			}
 #endif
 		}
@@ -298,7 +298,9 @@ NTSTATUS DriverInitialize(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistr
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
 	else {
+#ifdef DEBUG
 		DbgPrintEx(0, 0, "[+] ZwOpenSection succeeded. Handle: %p\n", tempSectionHandle);
+#endif
 		ZwClose(tempSectionHandle);
 	}
 

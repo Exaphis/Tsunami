@@ -1,5 +1,13 @@
 #include <ntifs.h>
 
+#define DEBUG
+#ifdef DEBUG
+#define DPRINT(...) DbgPrintEx(0, 0, __VA_ARGS__)
+#else
+#define DPRINT(...)
+#endif
+#define SHARED_MEMORY_NUM_BYTES 4 * 1024 * 1024
+
 PVOID pSharedSection;
 HANDLE hSection;
 
@@ -21,7 +29,7 @@ typedef struct _KERNEL_OPERATION_REQUEST
 	ULONG64 processID;
 	ULONG64 address;
 	SIZE_T size;
-	UCHAR data[4 * 1024 * 1024];
+	UCHAR data[SHARED_MEMORY_NUM_BYTES];
 } _KERNEL_OPERATION_REQUEST, *PKERNEL_OPERATION_REQUEST;
 
 NTSTATUS CopyVirtualMemory(PEPROCESS process, PVOID sourceAddress, PVOID targetAddress, SIZE_T size, BOOLEAN write)
@@ -49,30 +57,22 @@ NTSTATUS RequestHandler()
 	NTSTATUS status;
 	PKERNEL_OPERATION_REQUEST request = (PKERNEL_OPERATION_REQUEST)pSharedSection;
 
-#ifdef DEBUG
-	DbgPrintEx(0, 0, "[+] Tsunami loaded.\n");
-#endif
+	DPRINT("[+] Tsunami loaded.\n");
 
 	while (1) {
 		// Wait for user-mode process to request a read/write/kill
-#ifdef DEBUG
-		DbgPrintEx(0, 0, "[+] Waiting for request event...\n");
-#endif
+		DPRINT("[+] Waiting for request event...\n");
 		KeWaitForSingleObject(pSharedRequestEvent, Executive, KernelMode, FALSE, NULL);
 		
 		// Clear event once received
 		KeClearEvent(pSharedRequestEvent);
-#ifdef DEBUG
-		DbgPrintEx(0, 0, "\n[+] Event received and cleared.\n");
-		DbgPrintEx(0, 0, "Request type: %d\n", request->operationType);
-#endif
+		DPRINT("\n[+] Event received and cleared.\n");
+		DPRINT("Request type: %d\n", request->operationType);
 
 		// Read request
 		if (request->operationType == Read) {
-#ifdef DEBUG
-			DbgPrintEx(0, 0, "[+] Read request received.\n");
-			DbgPrintEx(0, 0, "PID: %lu, address: 0x%I64X, size: %lu \n", request->processID, request->address, request->size);
-#endif
+			DPRINT("[+] Read request received.\n");
+			DPRINT("PID: %lu, address: 0x%I64X, size: %lu \n", request->processID, request->address, request->size);
 
 			PEPROCESS process;
 			status = PsLookupProcessByProcessId((HANDLE)request->processID, &process);
@@ -81,27 +81,21 @@ NTSTATUS RequestHandler()
 				status = CopyVirtualMemory(process, (PVOID)request->address, (PVOID)&request->data, request->size, FALSE);
 				ObDereferenceObject(process);
 
-#ifdef DEBUG
 				if (!NT_SUCCESS(status)) {
-					DbgPrintEx(0, 0, "[-] CopyVirtualMemory failed. Status: %p\n", status);
+					DPRINT("[-] CopyVirtualMemory failed. Status: %p\n", status);
 				}
-#endif
 			}
-#ifdef DEBUG
 			else {
-				DbgPrintEx(0, 0, "[-] PsLookupProcessByProcessId failed. Status: %p\n", status);
+				DPRINT("[-] PsLookupProcessByProcessId failed. Status: %p\n", status);
 			}
-#endif
 
 			request->success = NT_SUCCESS(status);
 		}
 
 		// Write request
 		else if (request->operationType == Write) {
-#ifdef DEBUG
-			DbgPrintEx(0, 0, "[+] Write request received.\n");
-			DbgPrintEx(0, 0, "PID: %lu, address: 0x%I64X, size: %lu \n", request->processID, request->address, request->size);
-#endif
+			DPRINT("[+] Write request received.\n");
+			DPRINT("PID: %lu, address: 0x%I64X, size: %lu \n", request->processID, request->address, request->size);
 
 			PEPROCESS process;
 			status = PsLookupProcessByProcessId((HANDLE)request->processID, &process);
@@ -110,64 +104,46 @@ NTSTATUS RequestHandler()
 				status = CopyVirtualMemory(process, (PVOID)&request->data, (PVOID)request->address, request->size, TRUE);
 				ObDereferenceObject(process);
 
-#ifdef DEBUG
 				if (!NT_SUCCESS(status)) {
-					DbgPrintEx(0, 0, "[-] CopyVirtualMemory failed. Status: %p\n", status);
+					DPRINT("[-] CopyVirtualMemory failed. Status: %p\n", status);
 				}
-#endif
 			}
-#ifdef DEBUG
 			else {
-				DbgPrintEx(0, 0, "[-] PsLookupProcessByProcessId failed. Status: %p\n", status);
+				DPRINT("[-] PsLookupProcessByProcessId failed. Status: %p\n", status);
 			}
-#endif
 
 			request->success = NT_SUCCESS(status);
 		}
 
 		// Kill request
 		else if (request->operationType == Kill) {
-#ifdef DEBUG
-			DbgPrintEx(0, 0, "[+] Tsunami unload routine called.\n");
-#endif
+			DPRINT("[+] Tsunami unload routine called.\n");
 
 			// Unmap view of section in kernel address space
 			if (pSharedSection) {
 				if (!NT_SUCCESS(MmUnmapViewInSystemSpace(pSharedSection))) {
-#ifdef DEBUG
-					DbgPrintEx(0, 0, "[-] MmUnmapViewInSystemSpace failed.\n");
-#endif
+					DPRINT("[-] MmUnmapViewInSystemSpace failed.\n");
 				}
-#ifdef DEBUG
-				DbgPrintEx(0, 0, "Shared section unmapped.\n");
-#endif
+				DPRINT("Shared section unmapped.\n");
 			}
 
 			// Close handle to section
 			if (hSection) {
 				ZwClose(hSection);
-#ifdef DEBUG
-				DbgPrintEx(0, 0, "Handle to section closed.\n");
-#endif
+				DPRINT("Handle to section closed.\n");
 			}
 
 			// Close handles to events
 			if (hRequestEvent) {
 				ZwClose(hRequestEvent);
-#ifdef DEBUG
-				DbgPrintEx(0, 0, "Handle to request event closed.\n");
-#endif
+				DPRINT("Handle to request event closed.\n");
 			}
 			if (hCompletionEvent) {
 				ZwClose(hCompletionEvent);
-#ifdef DEBUG
-				DbgPrintEx(0, 0, "Handle to completion event closed.\n");
-#endif
+				DPRINT("Handle to completion event closed.\n");
 			}
 
-#ifdef DEBUG
-			DbgPrintEx(0, 0, "[+] Tsunami unloaded.\n");
-#endif
+			DPRINT("[+] Tsunami unloaded.\n");
 			return STATUS_SUCCESS;
 		}
 
@@ -180,9 +156,7 @@ NTSTATUS RequestHandler()
 NTSTATUS CreateSharedMemory()
 {
 	// Source: https://raw.githubusercontent.com/mq1n/EasyRing0/master/Tutorial_6_ShareMem_Communication_SYS/main.c
-#ifdef DEBUG
-	DbgPrintEx(0, 0, "[+] Creating shared memory...\n");
-#endif
+	DPRINT("[+] Creating shared memory...\n");
 	NTSTATUS status = STATUS_UNSUCCESSFUL;
 
 	UNICODE_STRING uSectionName = { 0 };
@@ -197,14 +171,10 @@ NTSTATUS CreateSharedMemory()
 	status = ZwCreateSection(&hSection, SECTION_ALL_ACCESS, &objAttributes, &lMaxSize, PAGE_READWRITE, SEC_COMMIT, NULL);
 	if (status != STATUS_SUCCESS)
 	{
-#ifdef DEBUG
-		DbgPrintEx(0, 0, "[-] ZwCreateSection fail! Status: %p\n", status);
-#endif
+		DPRINT("[-] ZwCreateSection fail! Status: %p\n", status);
 		return status;
 	}
-#ifdef DEBUG
-	DbgPrintEx(0, 0, "[+] ZwCreateSection completed!\n");
-#endif
+	DPRINT("[+] ZwCreateSection completed!\n");
 
 	return status;
 }
@@ -220,15 +190,11 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	status = CreateSharedMemory();
 
 	if (!NT_SUCCESS(status)) {
-#ifdef DEBUG
-		DbgPrintEx(0, 0, "[-] CreateSharedMemory fail!\n");
-#endif
+		DPRINT("[-] CreateSharedMemory fail!\n");
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
 
-#ifdef DEBUG
-	DbgPrintEx(0, 0, "[+] Shared memory created.\n");
-#endif
+	DPRINT("[+] Shared memory created.\n");
 
 	// Try to open section
 	UNICODE_STRING uSectionName = { 0 };
@@ -240,16 +206,12 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	HANDLE tempSectionHandle;
 	status = ZwOpenSection(&tempSectionHandle, SECTION_ALL_ACCESS, &objAttributes);
 	if (!NT_SUCCESS(status)) {
-#ifdef DEBUG
-		DbgPrintEx(0, 0, "[-] ZwOpenSection fail! Status: %p\n", status);
-#endif
+		DPRINT("[-] ZwOpenSection fail! Status: %p\n", status);
 
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
 	else {
-#ifdef DEBUG
-		DbgPrintEx(0, 0, "[+] ZwOpenSection succeeded. Handle: %p\n", tempSectionHandle);
-#endif
+		DPRINT("[+] ZwOpenSection succeeded. Handle: %p\n", tempSectionHandle);
 		ZwClose(tempSectionHandle);
 	}
 
@@ -262,16 +224,12 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	status = MmMapViewInSystemSpace(pContextSharedSection, &pSharedSection, &ulViewSize);
 	if (!NT_SUCCESS(status))
 	{
-#ifdef DEBUG
-		DbgPrintEx(0, 0, "MmMapViewInSystemSpace fail! Status: %p\n", status);
-#endif
+		DPRINT("MmMapViewInSystemSpace fail! Status: %p\n", status);
 
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
-#ifdef DEBUG
-	DbgPrintEx(0, 0, "[+] MmMapViewInSystemSpace completed!\n");
-	DbgPrintEx(0, 0, "pSharedSection = 0x%p\n", pSharedSection);
-#endif
+	DPRINT("[+] MmMapViewInSystemSpace completed!\n");
+	DPRINT("pSharedSection = 0x%p\n", pSharedSection);
 
 	// Dereference shared section object
 	ObDereferenceObject(pContextSharedSection);
@@ -286,17 +244,13 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	pSharedCompletionEvent = IoCreateNotificationEvent(&uCompletionEventName, &hCompletionEvent);
 
 	if (!pSharedRequestEvent || !pSharedCompletionEvent) {
-#ifdef DEBUG
-		DbgPrintEx(0, 0, "[-] IoCreateNotificationEvent failed!\n");
-#endif
+		DPRINT("[-] IoCreateNotificationEvent failed!\n");
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
 
 	KeClearEvent(pSharedRequestEvent);
 	KeClearEvent(pSharedCompletionEvent);
-#ifdef DEBUG
-	DbgPrintEx(0, 0, "[+] IoCreateNotificationEvent completed!\n");
-#endif
+	DPRINT("[+] IoCreateNotificationEvent completed!\n");
 
 	// Create thread for request handler
 	HANDLE hThread;
@@ -305,15 +259,11 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	status = PsCreateSystemThread(&hThread, THREAD_ALL_ACCESS, &threadAttributes, NULL, NULL, (PKSTART_ROUTINE)RequestHandler, NULL);
 	if (!NT_SUCCESS(status))
 	{
-#ifdef DEBUG
-		DbgPrintEx(0, 0, "PsCreateSystemThread fail! Status: %p\n", status);
-#endif
+		DPRINT("PsCreateSystemThread fail! Status: %p\n", status);
 
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
-#ifdef DEBUG
-	DbgPrintEx(0, 0, "[+] PsCreateSystemThread completed!\n");
-#endif
+	DPRINT("[+] PsCreateSystemThread completed!\n");
 
 	return STATUS_SUCCESS;
 }

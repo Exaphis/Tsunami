@@ -2,7 +2,7 @@
 
 Yet another Windows driver used to read and write memory from kernel.
 
-It receives instructions from userland with IOCTLs and uses shared memory to communicate the bytes read and bytes to write.
+It receives instructions from userland using named events and shared memory.
 
 ## Building
 
@@ -10,7 +10,7 @@ This project has been tested to work on Windows 10, version 1803. It was built u
 
 ## Loading
 
-The driver is designed to be "driverless" and able to be loaded through manual mapping by a tool such as drvmap, Turla Driver Loader, or kdmapper. 
+The driver is designed to be "driverless" and able to be manual mapped by a tool such as drvmap, Turla Driver Loader, or kdmapper. 
 
 It has been verified to work with drvmap and kdmapper.  
 

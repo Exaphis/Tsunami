@@ -1,6 +1,5 @@
 #include <ntifs.h>
 
-#define DEBUG
 #ifdef DEBUG
 #define DPRINT(...) DbgPrintEx(0, 0, __VA_ARGS__)
 #else
@@ -61,12 +60,12 @@ NTSTATUS RequestHandler()
 
 	while (1) {
 		// Wait for user-mode process to request a read/write/kill
-		DPRINT("[+] Waiting for request event...\n");
+		DPRINT("\n[+] Waiting for request event...\n");
 		KeWaitForSingleObject(pSharedRequestEvent, Executive, KernelMode, FALSE, NULL);
 		
 		// Clear event once received
 		KeClearEvent(pSharedRequestEvent);
-		DPRINT("\n[+] Event received and cleared.\n");
+		DPRINT("[+] Event received and cleared.\n");
 		DPRINT("Request type: %d\n", request->operationType);
 
 		// Read request
@@ -153,67 +152,31 @@ NTSTATUS RequestHandler()
 	return STATUS_SUCCESS;
 }
 
-NTSTATUS CreateSharedMemory()
-{
-	// Source: https://raw.githubusercontent.com/mq1n/EasyRing0/master/Tutorial_6_ShareMem_Communication_SYS/main.c
-	DPRINT("[+] Creating shared memory...\n");
-	NTSTATUS status = STATUS_UNSUCCESSFUL;
-
-	UNICODE_STRING uSectionName = { 0 };
-	RtlInitUnicodeString(&uSectionName, L"\\BaseNamedObjects\\TsunamiSharedMemory");
-
-	OBJECT_ATTRIBUTES objAttributes = { 0 };
-	InitializeObjectAttributes(&objAttributes, &uSectionName, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
-
-	LARGE_INTEGER lMaxSize = { 0 };
-	lMaxSize.HighPart = 0;
-	lMaxSize.LowPart = sizeof(_KERNEL_OPERATION_REQUEST);
-	status = ZwCreateSection(&hSection, SECTION_ALL_ACCESS, &objAttributes, &lMaxSize, PAGE_READWRITE, SEC_COMMIT, NULL);
-	if (status != STATUS_SUCCESS)
-	{
-		DPRINT("[-] ZwCreateSection fail! Status: %p\n", status);
-		return status;
-	}
-	DPRINT("[+] ZwCreateSection completed!\n");
-
-	return status;
-}
-
-// Fake Driver entrypoint
 NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath) {
 	UNREFERENCED_PARAMETER(pDriverObject);
 	UNREFERENCED_PARAMETER(pRegistryPath);
 
 	NTSTATUS status;
 
-	// Create shared section
-	status = CreateSharedMemory();
+	// Create shared memory
+	DPRINT("[+] Creating shared memory...\n");
 
-	if (!NT_SUCCESS(status)) {
-		DPRINT("[-] CreateSharedMemory fail!\n");
-		return STATUS_DRIVER_UNABLE_TO_LOAD;
-	}
-
-	DPRINT("[+] Shared memory created.\n");
-
-	// Try to open section
 	UNICODE_STRING uSectionName = { 0 };
 	RtlInitUnicodeString(&uSectionName, L"\\BaseNamedObjects\\TsunamiSharedMemory");
 
 	OBJECT_ATTRIBUTES objAttributes = { 0 };
-	InitializeObjectAttributes(&objAttributes, &uSectionName, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+	InitializeObjectAttributes(&objAttributes, &uSectionName, OBJ_KERNEL_HANDLE, NULL, NULL);
 
-	HANDLE tempSectionHandle;
-	status = ZwOpenSection(&tempSectionHandle, SECTION_ALL_ACCESS, &objAttributes);
-	if (!NT_SUCCESS(status)) {
-		DPRINT("[-] ZwOpenSection fail! Status: %p\n", status);
-
+	LARGE_INTEGER lMaxSize = { 0 };
+	lMaxSize.HighPart = 0;
+	lMaxSize.LowPart = sizeof(_KERNEL_OPERATION_REQUEST);
+	status = ZwCreateSection(&hSection, SECTION_ALL_ACCESS, &objAttributes, &lMaxSize, PAGE_READWRITE, SEC_COMMIT, NULL);
+	if (!NT_SUCCESS(status))
+	{
+		DPRINT("[-] ZwCreateSection fail! Status: %p\n", status);
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
-	else {
-		DPRINT("[+] ZwOpenSection succeeded. Handle: %p\n", tempSectionHandle);
-		ZwClose(tempSectionHandle);
-	}
+	DPRINT("[+] Shared memory created.\n");
 
 	// Get pointer to shared section in context
 	PVOID pContextSharedSection;
@@ -225,7 +188,6 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	if (!NT_SUCCESS(status))
 	{
 		DPRINT("MmMapViewInSystemSpace fail! Status: %p\n", status);
-
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
 	DPRINT("[+] MmMapViewInSystemSpace completed!\n");
@@ -247,10 +209,11 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 		DPRINT("[-] IoCreateNotificationEvent failed!\n");
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
+	DPRINT("[+] IoCreateNotificationEvent completed!\n");
 
+	// Clear events since they start in the signaled state
 	KeClearEvent(pSharedRequestEvent);
 	KeClearEvent(pSharedCompletionEvent);
-	DPRINT("[+] IoCreateNotificationEvent completed!\n");
 
 	// Create thread for request handler
 	HANDLE hThread;
@@ -260,7 +223,6 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	if (!NT_SUCCESS(status))
 	{
 		DPRINT("PsCreateSystemThread fail! Status: %p\n", status);
-
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
 	DPRINT("[+] PsCreateSystemThread completed!\n");

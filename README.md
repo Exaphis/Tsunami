@@ -18,3 +18,4 @@ It has been tested with drvmap.
 
 * https://www.unknowncheats.me/
 * Zer0Mem0ry's KernelBhop project
+* mq1n's EasyRing0 project

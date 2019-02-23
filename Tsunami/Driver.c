@@ -72,7 +72,7 @@ NTSTATUS RequestHandler()
 
 		// Read request
 		case Read:
-			DPRINT("[+] Read request received.\n");
+			DPRINT("Read request received.\n");
 			DPRINT("PID: %lu, address: 0x%I64X, size: %lu \n", request->processID, request->address, request->size);
 
 			status = PsLookupProcessByProcessId((HANDLE)request->processID, &process);
@@ -94,7 +94,7 @@ NTSTATUS RequestHandler()
 
 		// Write request
 		case Write:
-			DPRINT("[+] Write request received.\n");
+			DPRINT("Write request received.\n");
 			DPRINT("PID: %lu, address: 0x%I64X, size: %lu \n", request->processID, request->address, request->size);
 
 			status = PsLookupProcessByProcessId((HANDLE)request->processID, &process);
@@ -168,8 +168,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	InitializeObjectAttributes(&objAttributes, &uSectionName, OBJ_KERNEL_HANDLE, NULL, NULL);
 
 	LARGE_INTEGER lMaxSize = { 0 };
-	lMaxSize.HighPart = 0;
-	lMaxSize.LowPart = sizeof(_KERNEL_OPERATION_REQUEST);
+	lMaxSize.QuadPart = sizeof(_KERNEL_OPERATION_REQUEST);
 	status = ZwCreateSection(&hSection, SECTION_ALL_ACCESS, &objAttributes, &lMaxSize, PAGE_READWRITE, SEC_COMMIT, NULL);
 	if (!NT_SUCCESS(status))
 	{
@@ -187,7 +186,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	status = MmMapViewInSystemSpace(pContextSharedSection, &pSharedSection, &ulViewSize);
 	if (!NT_SUCCESS(status))
 	{
-		DPRINT("MmMapViewInSystemSpace fail! Status: %p\n", status);
+		DPRINT("[-] MmMapViewInSystemSpace fail! Status: %p\n", status);
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
 	DPRINT("[+] MmMapViewInSystemSpace completed!\n");
@@ -222,7 +221,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	status = PsCreateSystemThread(&hThread, THREAD_ALL_ACCESS, &threadAttributes, NULL, NULL, (PKSTART_ROUTINE)RequestHandler, NULL);
 	if (!NT_SUCCESS(status))
 	{
-		DPRINT("PsCreateSystemThread fail! Status: %p\n", status);
+		DPRINT("[-] PsCreateSystemThread fail! Status: %p\n", status);
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
 	DPRINT("[+] PsCreateSystemThread completed!\n");

@@ -15,15 +15,15 @@ HANDLE hRequestEvent;
 PKEVENT pSharedCompletionEvent;
 HANDLE hCompletionEvent;
 
-typedef enum Operation_t {
+typedef enum Operation {
 	Read,
 	Write,
 	Unload
-} Operation_t;
+} Operation;
 
 typedef struct _KERNEL_OPERATION_REQUEST
 {
-	Operation_t operationType;
+	Operation operationType;
 	BOOLEAN success;
 	ULONG64 processID;
 	ULONG64 address;

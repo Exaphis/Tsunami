@@ -18,7 +18,7 @@ HANDLE hCompletionEvent;
 typedef enum Operation_t {
 	Read,
 	Write,
-	Kill
+	Unload
 } Operation_t;
 
 typedef struct _KERNEL_OPERATION_REQUEST
@@ -50,10 +50,10 @@ NTSTATUS CopyVirtualMemory(PEPROCESS process, PVOID sourceAddress, PVOID targetA
 
 	return STATUS_SUCCESS;
 }
-
 NTSTATUS RequestHandler()
 {
 	NTSTATUS status;
+	PEPROCESS process;
 	PKERNEL_OPERATION_REQUEST request = (PKERNEL_OPERATION_REQUEST)pSharedSection;
 
 	DPRINT("[+] Tsunami loaded.\n");
@@ -68,12 +68,13 @@ NTSTATUS RequestHandler()
 		DPRINT("[+] Event received and cleared.\n");
 		DPRINT("Request type: %d\n", request->operationType);
 
+		switch (request->operationType) {
+
 		// Read request
-		if (request->operationType == Read) {
+		case Read:
 			DPRINT("[+] Read request received.\n");
 			DPRINT("PID: %lu, address: 0x%I64X, size: %lu \n", request->processID, request->address, request->size);
 
-			PEPROCESS process;
 			status = PsLookupProcessByProcessId((HANDLE)request->processID, &process);
 
 			if (NT_SUCCESS(status)) {
@@ -89,14 +90,13 @@ NTSTATUS RequestHandler()
 			}
 
 			request->success = NT_SUCCESS(status);
-		}
+			break;
 
 		// Write request
-		else if (request->operationType == Write) {
+		case Write:
 			DPRINT("[+] Write request received.\n");
 			DPRINT("PID: %lu, address: 0x%I64X, size: %lu \n", request->processID, request->address, request->size);
 
-			PEPROCESS process;
 			status = PsLookupProcessByProcessId((HANDLE)request->processID, &process);
 
 			if (NT_SUCCESS(status)) {
@@ -112,10 +112,10 @@ NTSTATUS RequestHandler()
 			}
 
 			request->success = NT_SUCCESS(status);
-		}
+			break;
 
-		// Kill request
-		else if (request->operationType == Kill) {
+		// Unload request
+		case Unload:
 			DPRINT("[+] Tsunami unload routine called.\n");
 
 			// Unmap view of section in kernel address space

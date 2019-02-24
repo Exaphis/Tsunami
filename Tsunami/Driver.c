@@ -96,14 +96,14 @@ NTSTATUS GetModuleBase(PEPROCESS process, LPCWSTR moduleName, ULONG64* baseAddre
 	PPEB peb = PsGetProcessPeb(process);
 	if (!peb) {
 		KeUnstackDetachProcess(&apcState);
-		DPRINT("[-] PsGetProcessPeb failed.\n");
+		DPRINT("[-] PsGetProcessPeb failed.");
 		return STATUS_UNSUCCESSFUL;
 	}
 
 	PPEB_LDR_DATA ldr = peb->LoaderData;
 	if (!ldr) {
 		KeUnstackDetachProcess(&apcState);
-		DPRINT("[-] peb->LoaderData is invalid.\n");
+		DPRINT("[-] peb->LoaderData is invalid.");
 		return STATUS_UNSUCCESSFUL;
 	}
 
@@ -117,7 +117,7 @@ NTSTATUS GetModuleBase(PEPROCESS process, LPCWSTR moduleName, ULONG64* baseAddre
 
 		if (!ldr->Initialized) {
 			KeUnstackDetachProcess(&apcState);
-			DPRINT("[-] LoaderData not initialized.\n");
+			DPRINT("[-] LoaderData not initialized.");
 			return STATUS_UNSUCCESSFUL;
 		}
 	}
@@ -133,7 +133,7 @@ NTSTATUS GetModuleBase(PEPROCESS process, LPCWSTR moduleName, ULONG64* baseAddre
 	}
 
 	KeUnstackDetachProcess(&apcState);
-	DPRINT("Module not found.\n");
+	DPRINT("Module not found.");
 	return STATUS_NOT_FOUND;
 }
 
@@ -141,25 +141,25 @@ VOID UnloadDriver() {
 	// Unmap view of section in kernel address space
 	if (pSharedSection) {
 		if (!NT_SUCCESS(MmUnmapViewInSystemSpace(pSharedSection))) {
-			DPRINT("[-] MmUnmapViewInSystemSpace failed.\n");
+			DPRINT("[-] MmUnmapViewInSystemSpace failed.");
 		}
-		DPRINT("Shared section unmapped.\n");
+		DPRINT("Shared section unmapped.");
 	}
 
 	// Close handle to section
 	if (hSection) {
 		ZwClose(hSection);
-		DPRINT("Handle to section closed.\n");
+		DPRINT("Handle to section closed.");
 	}
 
 	// Close handles to events
 	if (hRequestEvent) {
 		ZwClose(hRequestEvent);
-		DPRINT("Handle to request event closed.\n");
+		DPRINT("Handle to request event closed.");
 	}
 	if (hCompletionEvent) {
 		ZwClose(hCompletionEvent);
-		DPRINT("Handle to completion event closed.\n");
+		DPRINT("Handle to completion event closed.");
 	}
 }
 
@@ -172,24 +172,24 @@ VOID RequestHandler(PVOID parameter)
 	PEPROCESS process;
 	PKERNEL_OPERATION_REQUEST request = (PKERNEL_OPERATION_REQUEST)pSharedSection;
 
-	DPRINT("[+] Tsunami loaded.\n");
+	DPRINT("[+] Tsunami loaded.");
 
 	while (1) {
 		// Wait for user-mode process to request a read/write/kill
-		DPRINT("\n[+] Waiting for request event...\n");
+		DPRINT("\n[+] Waiting for request event...");
 		KeWaitForSingleObject(pSharedRequestEvent, Executive, KernelMode, FALSE, NULL);
 		
 		// Clear event once received
 		KeClearEvent(pSharedRequestEvent);
-		DPRINT("[+] Event received and cleared.\n");
-		DPRINT("Request type: %d\n", request->operationType);
+		DPRINT("[+] Event received and cleared.");
+		DPRINT("Request type: %d", request->operationType);
 
 		switch (request->operationType) {
 
 		// Read request
 		case Read:
-			DPRINT("Read request received.\n");
-			DPRINT("PID: %lu, address: 0x%I64X, size: %lu \n", request->processID, request->address, request->size);
+			DPRINT("Read request received.");
+			DPRINT("PID: %lu, address: 0x%I64X, size: %lu ", request->processID, request->address, request->size);
 
 			status = PsLookupProcessByProcessId((HANDLE)request->processID, &process);
 
@@ -198,11 +198,11 @@ VOID RequestHandler(PVOID parameter)
 				ObDereferenceObject(process);
 
 				if (!NT_SUCCESS(status)) {
-					DPRINT("[-] CopyVirtualMemory failed. Status: %p\n", status);
+					DPRINT("[-] CopyVirtualMemory failed. Status: %p", status);
 				}
 			}
 			else {
-				DPRINT("[-] PsLookupProcessByProcessId failed. Status: %p\n", status);
+				DPRINT("[-] PsLookupProcessByProcessId failed. Status: %p", status);
 			}
 
 			request->success = NT_SUCCESS(status);
@@ -210,8 +210,8 @@ VOID RequestHandler(PVOID parameter)
 
 		// Write request
 		case Write:
-			DPRINT("Write request received.\n");
-			DPRINT("PID: %lu, address: 0x%I64X, size: %lu \n", request->processID, request->address, request->size);
+			DPRINT("Write request received.");
+			DPRINT("PID: %lu, address: 0x%I64X, size: %lu ", request->processID, request->address, request->size);
 
 			status = PsLookupProcessByProcessId((HANDLE)request->processID, &process);
 
@@ -220,11 +220,11 @@ VOID RequestHandler(PVOID parameter)
 				ObDereferenceObject(process);
 
 				if (!NT_SUCCESS(status)) {
-					DPRINT("[-] CopyVirtualMemory failed. Status: %p\n", status);
+					DPRINT("[-] CopyVirtualMemory failed. Status: %p", status);
 				}
 			}
 			else {
-				DPRINT("[-] PsLookupProcessByProcessId failed. Status: %p\n", status);
+				DPRINT("[-] PsLookupProcessByProcessId failed. Status: %p", status);
 			}
 
 			request->success = NT_SUCCESS(status);
@@ -232,10 +232,10 @@ VOID RequestHandler(PVOID parameter)
 		
 		// Module base request
 		case GetModule:
-			DPRINT("GetModuleBase request received.\n");
+			DPRINT("GetModuleBase request received.");
 
 			LPCWSTR moduleName = (LPCWSTR)request->data;
-			DPRINT("PID: %lu, module name: %ls\n", request->processID, moduleName);
+			DPRINT("PID: %lu, module name: %ls", request->processID, moduleName);
 
 			status = PsLookupProcessByProcessId((HANDLE)request->processID, &process);
 			if (NT_SUCCESS(status)) {
@@ -243,14 +243,14 @@ VOID RequestHandler(PVOID parameter)
 				ObDereferenceObject(process);
 
 				if (NT_SUCCESS(status)) {
-					DPRINT("GetModuleBase succeeded, module base: 0x%I64X\n", *(ULONG64*)request->data);
+					DPRINT("GetModuleBase succeeded, module base: 0x%I64X", *(ULONG64*)request->data);
 				}
 				else {
-					DPRINT("GetModuleBase failed. Status: %p\n", status);
+					DPRINT("GetModuleBase failed. Status: %p", status);
 				}
 			}
 			else {
-				DPRINT("[-] PsLookupProcessByProcessId failed. Status: %p\n", status);
+				DPRINT("[-] PsLookupProcessByProcessId failed. Status: %p", status);
 			}
 
 			request->success = NT_SUCCESS(status);
@@ -258,9 +258,9 @@ VOID RequestHandler(PVOID parameter)
 
 		// Unload request
 		case Unload:
-			DPRINT("Unload request received.\n");
+			DPRINT("Unload request received.");
 			UnloadDriver();
-			DPRINT("[+] Tsunami unloaded.\n");
+			DPRINT("[+] Tsunami unloaded.");
 
 			return;
 		}
@@ -278,7 +278,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	NTSTATUS status;
 
 	// Create shared memory
-	DPRINT("[+] Creating shared memory...\n");
+	DPRINT("[+] Creating shared memory...");
 
 	UNICODE_STRING sectionName = RTL_CONSTANT_STRING(L"\\BaseNamedObjects\\TsunamiSharedMemory");
 
@@ -290,10 +290,10 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	status = ZwCreateSection(&hSection, SECTION_ALL_ACCESS, &objAttributes, &lMaxSize, PAGE_READWRITE, SEC_COMMIT, NULL);
 	if (!NT_SUCCESS(status))
 	{
-		DPRINT("[-] ZwCreateSection fail! Status: %p\n", status);
+		DPRINT("[-] ZwCreateSection fail! Status: %p", status);
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
-	DPRINT("[+] Shared memory created.\n");
+	DPRINT("[+] Shared memory created.");
 
 	// Get pointer to shared section in context
 	PVOID pContextSharedSection;
@@ -304,11 +304,11 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	status = MmMapViewInSystemSpace(pContextSharedSection, &pSharedSection, &ulViewSize);
 	if (!NT_SUCCESS(status))
 	{
-		DPRINT("[-] MmMapViewInSystemSpace fail! Status: %p\n", status);
+		DPRINT("[-] MmMapViewInSystemSpace fail! Status: %p", status);
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
-	DPRINT("[+] MmMapViewInSystemSpace completed!\n");
-	DPRINT("pSharedSection = 0x%p\n", pSharedSection);
+	DPRINT("[+] MmMapViewInSystemSpace completed!");
+	DPRINT("pSharedSection = 0x%p", pSharedSection);
 
 	// Dereference shared section object
 	ObDereferenceObject(pContextSharedSection);
@@ -321,10 +321,10 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	pSharedCompletionEvent = IoCreateNotificationEvent(&uCompletionEventName, &hCompletionEvent);
 
 	if (!pSharedRequestEvent || !pSharedCompletionEvent) {
-		DPRINT("[-] IoCreateNotificationEvent failed!\n");
+		DPRINT("[-] IoCreateNotificationEvent failed!");
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
-	DPRINT("[+] IoCreateNotificationEvent completed!\n");
+	DPRINT("[+] IoCreateNotificationEvent completed!");
 
 	// Clear events since they start in the signaled state
 	KeClearEvent(pSharedRequestEvent);

@@ -5,7 +5,7 @@
 
 #define SHARED_MEMORY_NUM_BYTES 4 * 1024 * 1024
 
- enum Operation {
+enum Operation {
 	Read,
 	Write,
 	GetModule,
@@ -120,6 +120,9 @@ public:
 	}
 
 	bool GetModuleBase(LPCWSTR moduleName, ULONG64* base) {
+		if (hRequestEvent == INVALID_HANDLE_VALUE || hCompletionEvent == INVALID_HANDLE_VALUE)
+			return false;
+
 		request->operationType = Operation::GetModule;
 		request->processID = pid;
 		wcscpy_s((wchar_t*)request->data, sizeof(request->data), moduleName);

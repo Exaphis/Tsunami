@@ -5,9 +5,10 @@
 
 #define SHARED_MEMORY_NUM_BYTES 4 * 1024 * 1024
 
-enum Operation {
+ enum Operation {
 	Read,
 	Write,
+	GetModule,
 	Unload
 };
 
@@ -114,6 +115,20 @@ public:
 		SetEvent(hRequestEvent);
 		WaitForSingleObject(hCompletionEvent, INFINITE);
 		ResetEvent(hCompletionEvent);
+
+		return request->success;
+	}
+
+	bool GetModuleBase(LPCWSTR moduleName, ULONG64* base) {
+		request->operationType = Operation::GetModule;
+		request->processID = pid;
+		wcscpy_s((wchar_t*)request->data, sizeof(request->data), moduleName);
+
+		SetEvent(hRequestEvent);
+		WaitForSingleObject(hCompletionEvent, INFINITE);
+		ResetEvent(hCompletionEvent);
+
+		*base = *(ULONG64*)request->data;
 
 		return request->success;
 	}

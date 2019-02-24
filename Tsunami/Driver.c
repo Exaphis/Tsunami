@@ -7,6 +7,16 @@
 #endif
 #define SHARED_MEMORY_NUM_BYTES 4 * 1024 * 1024
 
+NTKERNELAPI NTSTATUS MmCopyVirtualMemory(
+	IN PEPROCESS		SourceProcess,
+	IN PVOID			SourceAddress,
+	IN PEPROCESS		TargetProcess,
+	IN PVOID			TargetAddress,
+	IN SIZE_T			BufferSize,
+	IN KPROCESSOR_MODE  PreviousMode,
+	OUT PSIZE_T			ReturnSize
+);
+
 PVOID pSharedSection;
 HANDLE hSection;
 
@@ -33,25 +43,15 @@ typedef struct _KERNEL_OPERATION_REQUEST
 
 NTSTATUS CopyVirtualMemory(PEPROCESS process, PVOID sourceAddress, PVOID targetAddress, SIZE_T size, BOOLEAN write)
 {
-	KAPC_STATE apcState;
-	KeStackAttachProcess(process, &apcState);
-
-	// Secure user virtual address range
-	HANDLE hMemory = MmSecureVirtualMemory(write ? targetAddress : sourceAddress, size, write ? PAGE_READWRITE : PAGE_READONLY);
-	if (!hMemory) {
-		KeUnstackDetachProcess(&apcState);
-		return STATUS_INVALID_ADDRESS;
-	}
-
-	RtlCopyMemory(targetAddress, sourceAddress, size);
-	MmUnsecureVirtualMemory(hMemory);
-
-	KeUnstackDetachProcess(&apcState);
-
-	return STATUS_SUCCESS;
+	SIZE_T bytes;
+	return MmCopyVirtualMemory(write ? PsGetCurrentProcess() : process, sourceAddress, write ? process : PsGetCurrentProcess(), targetAddress, size, KernelMode, &bytes);
 }
-NTSTATUS RequestHandler()
+
+VOID RequestHandler(PVOID parameter)
 {
+	// Free work item pool
+	ExFreePoolWithTag(parameter, 'looP');
+
 	NTSTATUS status;
 	PEPROCESS process;
 	PKERNEL_OPERATION_REQUEST request = (PKERNEL_OPERATION_REQUEST)pSharedSection;
@@ -143,13 +143,13 @@ NTSTATUS RequestHandler()
 			}
 
 			DPRINT("[+] Tsunami unloaded.\n");
-			return STATUS_SUCCESS;
+			return;
 		}
 
 		// Notify user-mode process that processing has completed
 		KeSetEvent(pSharedCompletionEvent, IO_NO_INCREMENT, FALSE);
 	}
-	return STATUS_SUCCESS;
+	return;
 }
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath) {
@@ -214,17 +214,11 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	KeClearEvent(pSharedRequestEvent);
 	KeClearEvent(pSharedCompletionEvent);
 
-	// Create thread for request handler
-	HANDLE hThread;
-	OBJECT_ATTRIBUTES threadAttributes = { 0 };
-	InitializeObjectAttributes(&threadAttributes, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
-	status = PsCreateSystemThread(&hThread, THREAD_ALL_ACCESS, &threadAttributes, NULL, NULL, (PKSTART_ROUTINE)RequestHandler, NULL);
-	if (!NT_SUCCESS(status))
-	{
-		DPRINT("[-] PsCreateSystemThread fail! Status: %p\n", status);
-		return STATUS_DRIVER_UNABLE_TO_LOAD;
-	}
-	DPRINT("[+] PsCreateSystemThread completed!\n");
+	// Start request handler in system worker thread
+	PWORK_QUEUE_ITEM workItem;
+	workItem = ExAllocatePoolWithTag(NonPagedPool, sizeof(WORK_QUEUE_ITEM), 'looP');
+	ExInitializeWorkItem(workItem, (PWORKER_THREAD_ROUTINE)RequestHandler, workItem);
+	ExQueueWorkItem(workItem, DelayedWorkQueue);
 
 	return STATUS_SUCCESS;
 }

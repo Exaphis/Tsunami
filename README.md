@@ -6,7 +6,7 @@ It receives instructions from userland using named events and shared memory.
 
 ## Building
 
-This project has been tested to work on Windows 10, version 1803. It was built using WDK 10, Release x64.
+This project has been tested to work on Windows 10, versions 1709 and 1809. It was built using WDK 10, Release x64.
 
 ## Loading
 

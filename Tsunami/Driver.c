@@ -9,13 +9,13 @@
 #define SHARED_MEMORY_NUM_BYTES 4 * 1024 * 1024
 
 NTKERNELAPI NTSTATUS MmCopyVirtualMemory(
-	IN PEPROCESS		SourceProcess,
-	IN PVOID			SourceAddress,
-	IN PEPROCESS		TargetProcess,
-	IN PVOID			TargetAddress,
-	IN SIZE_T			BufferSize,
-	IN KPROCESSOR_MODE  PreviousMode,
-	OUT PSIZE_T			ReturnSize
+	IN PEPROCESS       SourceProcess,
+	IN PVOID           SourceAddress,
+	IN PEPROCESS       TargetProcess,
+	IN PVOID           TargetAddress,
+	IN SIZE_T          BufferSize,
+	IN KPROCESSOR_MODE PreviousMode,
+	OUT PSIZE_T        ReturnSize
 );
 
 NTKERNELAPI PPEB NTAPI PsGetProcessPeb(
@@ -53,15 +53,7 @@ typedef struct _PEB {
 	PVOID         PostProcessInitRoutine;
 	BYTE          Reserved4[136];
 	ULONG         SessionId;
-} PEB, *ppeb;
-
-PVOID pSharedSection;
-HANDLE hSection;
-
-PKEVENT pSharedRequestEvent;
-HANDLE hRequestEvent;
-PKEVENT pSharedCompletionEvent;
-HANDLE hCompletionEvent;
+} PEB, *PPEB;
 
 typedef enum Operation {
 	Read,
@@ -79,6 +71,14 @@ typedef struct _KERNEL_OPERATION_REQUEST
 	SIZE_T size;
 	UCHAR data[SHARED_MEMORY_NUM_BYTES];
 } _KERNEL_OPERATION_REQUEST, *PKERNEL_OPERATION_REQUEST;
+
+PVOID pSharedSection;
+HANDLE hSection;
+
+PKEVENT pSharedRequestEvent;
+HANDLE hRequestEvent;
+PKEVENT pSharedCompletionEvent;
+HANDLE hCompletionEvent;
 
 NTSTATUS CopyVirtualMemory(PEPROCESS process, PVOID sourceAddress, PVOID targetAddress, SIZE_T size, BOOLEAN write)
 {
@@ -112,7 +112,7 @@ NTSTATUS GetModuleBase(PEPROCESS process, LPCWSTR moduleName, ULONG64* baseAddre
 	waitTime.QuadPart = -2500000;
 	if (!ldr->Initialized) {
 		while (!ldr->Initialized && waitCount++ < 4) {
-			KeDelayExecutionThread(KernelMode, TRUE, &waitTime);
+			KeDelayExecutionThread(KernelMode, FALSE, &waitTime);
 		}
 
 		if (!ldr->Initialized) {
@@ -165,6 +165,9 @@ VOID UnloadDriver() {
 
 VOID RequestHandler(PVOID parameter)
 {
+	KIRQL oldIrql;
+	KeRaiseIrql(APC_LEVEL, &oldIrql);
+
 	// Free work item pool
 	ExFreePoolWithTag(parameter, 'looP');
 
@@ -260,15 +263,16 @@ VOID RequestHandler(PVOID parameter)
 		case Unload:
 			DPRINT("Unload request received.");
 			UnloadDriver();
-			DPRINT("[+] Tsunami unloaded.");
-
-			return;
+			goto cleanup;
 		}
 
 		// Notify user-mode process that processing has completed
 		KeSetEvent(pSharedCompletionEvent, IO_NO_INCREMENT, FALSE);
 	}
-	return;
+
+cleanup:
+	DPRINT("Tsunami request handler terminated.");
+	KeLowerIrql(oldIrql);
 }
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath) {
@@ -335,6 +339,6 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	workItem = ExAllocatePoolWithTag(NonPagedPool, sizeof(WORK_QUEUE_ITEM), 'looP');
 	ExInitializeWorkItem(workItem, (PWORKER_THREAD_ROUTINE)RequestHandler, workItem);
 	ExQueueWorkItem(workItem, DelayedWorkQueue);
-
+	
 	return STATUS_SUCCESS;
 }

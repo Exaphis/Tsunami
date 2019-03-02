@@ -12,9 +12,9 @@ int main() {
 		std::cout << "GetModuleBase failed.\n";
 	}
 	
-	std::cout << std::dec << Driver.Read<int>(0x7cd05dfa78) << "\n";
-	std::cout << Driver.Read<float>(0x7cd05dfa7c) << "\n";
-	Driver.Write<int>(0x7cd05dfa78, 234234231);
+	std::cout << std::dec << Driver.Read<int>(0x89b12ffdf8) << "\n";
+	std::cout << Driver.Read<float>(0x89b12ffdfc) << "\n";
+	Driver.Write<int>(0x89b12ffdf8, 234234231);
 
 	//Driver.UnloadDriver();
 	getchar();

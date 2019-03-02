@@ -21,6 +21,7 @@ struct _KERNEL_OPERATION_REQUEST
 	SIZE_T size;
 	UCHAR data[SHARED_MEMORY_NUM_BYTES];
 };
+
 typedef _KERNEL_OPERATION_REQUEST* PKERNEL_OPERATION_REQUEST;
 
 class KeInterface
@@ -43,26 +44,26 @@ public:
 		hRequestEvent = OpenEvent(EVENT_ALL_ACCESS, FALSE, "Global\\TsunamiSharedRequestEvent");
 		if (hRequestEvent == INVALID_HANDLE_VALUE) {
 			std::cout << "[-] OpenEvent (TsunamiSharedRequestEvent) failed, Error: " << std::dec << GetLastError() << "\n";
-			return;
+			throw std::runtime_error("Failed to load driver interface.");
 		}
 
 		hCompletionEvent = OpenEvent(EVENT_ALL_ACCESS, FALSE, "Global\\TsunamiSharedCompletionEvent");
 		if (hCompletionEvent == INVALID_HANDLE_VALUE) {
 			std::cout << "[-] OpenEvent (TsunamiSharedCompletionEvent) failed, Error: " << std::dec << GetLastError() << "\n";
-			return;
+			throw std::runtime_error("Failed to load driver interface.");
 		}
 
 		// Map shared memory
 		hFileMapping = OpenFileMapping(FILE_MAP_ALL_ACCESS, FALSE, "Global\\TsunamiSharedMemory");
 		if (hFileMapping == INVALID_HANDLE_VALUE) {
 			std::cout << "[-] OpenFileMappingA failed, Error: " << std::dec << GetLastError() << "\n";
-			return;
+			throw std::runtime_error("Failed to load driver interface.");
 		}
 
 		sharedMemoryBuffer = MapViewOfFile(hFileMapping, FILE_MAP_WRITE, 0, 0, sizeof(_KERNEL_OPERATION_REQUEST));
 		if (!sharedMemoryBuffer) {
 			std::cout << "[-] MapViewOfFile failed, Error: " << std::dec << GetLastError() << "\n";
-			return;
+			throw std::runtime_error("Failed to load driver interface.");
 		}
 
 		CloseHandle(hFileMapping);
@@ -76,10 +77,7 @@ public:
 
 	bool ReadVirtualMemory(ULONG64 readAddress, UCHAR* buffer, SIZE_T size)
 	{
-		if (hRequestEvent == INVALID_HANDLE_VALUE || hCompletionEvent == INVALID_HANDLE_VALUE)
-			return false;
-
-		if (size > SHARED_MEMORY_NUM_BYTES)
+		if (size > sizeof(request->data))
 			return false;
 
 		request->operationType = Operation::Read;
@@ -100,10 +98,7 @@ public:
 
 	bool WriteVirtualMemory(ULONG64 writeAddress, UCHAR* buffer, SIZE_T size)
 	{
-		if (hRequestEvent == INVALID_HANDLE_VALUE || hCompletionEvent == INVALID_HANDLE_VALUE)
-			return false;
-
-		if (size > SHARED_MEMORY_NUM_BYTES)
+		if (size > sizeof(request->data))
 			return false;
 
 		request->operationType = Operation::Write;
@@ -120,9 +115,6 @@ public:
 	}
 
 	bool GetModuleBase(LPCWSTR moduleName, ULONG64* base) {
-		if (hRequestEvent == INVALID_HANDLE_VALUE || hCompletionEvent == INVALID_HANDLE_VALUE)
-			return false;
-
 		request->operationType = Operation::GetModule;
 		request->processID = pid;
 		wcscpy_s((wchar_t*)request->data, sizeof(request->data), moduleName);
@@ -136,31 +128,27 @@ public:
 		return request->success;
 	}
 
-	bool UnloadDriver() {
-		if (hRequestEvent == INVALID_HANDLE_VALUE)
-			return false;
-
+	void UnloadDriver() {
 		request->operationType = Operation::Unload;
 		SetEvent(hRequestEvent);
-		return true;
 	}
 
 	template <typename type>
 	type Read(ULONG64 readAddress)
 	{
-		UCHAR buf[sizeof(type)];
-		if (ReadVirtualMemory(readAddress, buf, sizeof(type)))
-			return *(type*)buf;
-		throw std::exception("Read failed.");
-		return *(type*)buf;
+		UCHAR buffer[sizeof(type)];
+		if (ReadVirtualMemory(readAddress, buffer, sizeof(type)))
+			return *(type*)buffer;
+		throw std::runtime_error("Read failed.");
+		return *(type*)buffer;
 	}
 
 	template <typename type>
 	type Read(ULONG64 readAddress, bool* success)
 	{
-		UCHAR buf[sizeof(type)];
-		*success = ReadVirtualMemory(readAddress, buf, sizeof(type));
-		return *(type*)buf;
+		UCHAR buffer[sizeof(type)];
+		*success = ReadVirtualMemory(readAddress, buffer, sizeof(type));
+		return *(type*)buffer;
 	}
 
 

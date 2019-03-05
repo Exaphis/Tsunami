@@ -85,8 +85,7 @@ public:
 		request->address = readAddress;
 		request->size = size;
 
-		SetEvent(hRequestEvent);
-		WaitForSingleObject(hCompletionEvent, INFINITE);
+		SignalObjectAndWait(hRequestEvent, hCompletionEvent, INFINITE, FALSE);
 		ResetEvent(hCompletionEvent);
 
 		if (request->success) {
@@ -107,8 +106,7 @@ public:
 		request->size = size;
 		memcpy(request->data, buffer, size);
 
-		SetEvent(hRequestEvent);
-		WaitForSingleObject(hCompletionEvent, INFINITE);
+		SignalObjectAndWait(hRequestEvent, hCompletionEvent, INFINITE, FALSE);
 		ResetEvent(hCompletionEvent);
 
 		return request->success;
@@ -119,8 +117,7 @@ public:
 		request->processID = pid;
 		wcscpy_s((wchar_t*)request->data, sizeof(request->data), moduleName);
 
-		SetEvent(hRequestEvent);
-		WaitForSingleObject(hCompletionEvent, INFINITE);
+		SignalObjectAndWait(hRequestEvent, hCompletionEvent, INFINITE, FALSE);
 		ResetEvent(hCompletionEvent);
 
 		*base = *(ULONG64*)request->data;

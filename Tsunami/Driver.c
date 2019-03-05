@@ -19,7 +19,7 @@ NTKERNELAPI NTSTATUS MmCopyVirtualMemory(
 );
 
 NTKERNELAPI PPEB NTAPI PsGetProcessPeb(
-	__in PEPROCESS Process
+	IN PEPROCESS Process
 );
 
 typedef struct _PEB_LDR_DATA {
@@ -294,24 +294,29 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	status = ZwCreateSection(&hSection, SECTION_ALL_ACCESS, &objAttributes, &lMaxSize, PAGE_READWRITE, SEC_COMMIT, NULL);
 	if (!NT_SUCCESS(status))
 	{
-		DPRINT("[-] ZwCreateSection fail! Status: %p", status);
+		DPRINT("[-] ZwCreateSection failed. Status: %p", status);
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
 	DPRINT("[+] Shared memory created.");
 
 	// Get pointer to shared section in context
 	PVOID pContextSharedSection;
-	ObReferenceObjectByHandle(hSection, SECTION_ALL_ACCESS, NULL, KernelMode, &pContextSharedSection, NULL);
+	status = ObReferenceObjectByHandle(hSection, SECTION_ALL_ACCESS, NULL, KernelMode, &pContextSharedSection, NULL);
+	if (!NT_SUCCESS(status))
+	{
+		DPRINT("[-] ObReferenceObjectByHandle failed. Status: %p", status);
+		return STATUS_DRIVER_UNABLE_TO_LOAD;
+	}
 
 	// Map shared section in context to system's address space so it can be accessed anywhere
 	SIZE_T ulViewSize = 0;
 	status = MmMapViewInSystemSpace(pContextSharedSection, &pSharedSection, &ulViewSize);
 	if (!NT_SUCCESS(status))
 	{
-		DPRINT("[-] MmMapViewInSystemSpace fail! Status: %p", status);
+		DPRINT("[-] MmMapViewInSystemSpace failed. Status: %p", status);
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
-	DPRINT("[+] MmMapViewInSystemSpace completed!");
+	DPRINT("[+] MmMapViewInSystemSpace completed.");
 	DPRINT("pSharedSection = 0x%p", pSharedSection);
 
 	// Dereference shared section object
@@ -325,10 +330,10 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	pSharedCompletionEvent = IoCreateNotificationEvent(&uCompletionEventName, &hCompletionEvent);
 
 	if (!pSharedRequestEvent || !pSharedCompletionEvent) {
-		DPRINT("[-] IoCreateNotificationEvent failed!");
+		DPRINT("[-] IoCreateNotificationEvent failed.");
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
-	DPRINT("[+] IoCreateNotificationEvent completed!");
+	DPRINT("[+] IoCreateNotificationEvent completed.");
 
 	// Clear events since they start in the signaled state
 	KeClearEvent(pSharedRequestEvent);

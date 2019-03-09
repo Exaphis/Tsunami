@@ -80,13 +80,9 @@ HANDLE hRequestEvent;
 PKEVENT pSharedCompletionEvent;
 HANDLE hCompletionEvent;
 
-NTSTATUS CopyVirtualMemory(PEPROCESS process, PVOID sourceAddress, PVOID targetAddress, SIZE_T size, BOOLEAN write)
-{
-	SIZE_T bytes;
-	return MmCopyVirtualMemory(write ? PsGetCurrentProcess() : process, sourceAddress, write ? process : PsGetCurrentProcess(), targetAddress, size, KernelMode, &bytes);
-}
-
 NTSTATUS GetModuleBase(PEPROCESS process, LPCWSTR moduleName, ULONG64* baseAddress) {
+	// Source: https://www.unknowncheats.me/forum/c-and-c-/190555-kernel-module-base-adress.html
+
 	UNICODE_STRING uModuleName = { 0 };
 	RtlInitUnicodeString(&uModuleName, moduleName);
 
@@ -172,6 +168,7 @@ VOID RequestHandler(PVOID parameter)
 	ExFreePoolWithTag(parameter, 'looP');
 
 	NTSTATUS status;
+	SIZE_T bytes;
 	PEPROCESS process;
 	PKERNEL_OPERATION_REQUEST request = (PKERNEL_OPERATION_REQUEST)pSharedSection;
 
@@ -197,11 +194,11 @@ VOID RequestHandler(PVOID parameter)
 			status = PsLookupProcessByProcessId((HANDLE)request->processID, &process);
 
 			if (NT_SUCCESS(status)) {
-				status = CopyVirtualMemory(process, (PVOID)request->address, (PVOID)&request->data, request->size, FALSE);
+				status = MmCopyVirtualMemory(process, (PVOID)request->address, PsGetCurrentProcess(), (PVOID)&request->data, request->size, KernelMode, &bytes);
 				ObDereferenceObject(process);
 
 				if (!NT_SUCCESS(status)) {
-					DPRINT("[-] CopyVirtualMemory failed. Status: %p", status);
+					DPRINT("[-] MmCopyVirtualMemory failed. Status: %p", status);
 				}
 			}
 			else {
@@ -219,11 +216,11 @@ VOID RequestHandler(PVOID parameter)
 			status = PsLookupProcessByProcessId((HANDLE)request->processID, &process);
 
 			if (NT_SUCCESS(status)) {
-				status = CopyVirtualMemory(process, (PVOID)&request->data, (PVOID)request->address, request->size, TRUE);
+				status = MmCopyVirtualMemory(PsGetCurrentProcess(), (PVOID)&request->data, process, (PVOID)request->address, request->size, KernelMode, &bytes);
 				ObDereferenceObject(process);
 
 				if (!NT_SUCCESS(status)) {
-					DPRINT("[-] CopyVirtualMemory failed. Status: %p", status);
+					DPRINT("[-] MmCopyVirtualMemory failed. Status: %p", status);
 				}
 			}
 			else {

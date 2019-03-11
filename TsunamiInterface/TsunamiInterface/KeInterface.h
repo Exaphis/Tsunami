@@ -2,8 +2,13 @@
 
 #include <Windows.h>
 #include <iostream>
+#include <initguid.h>
 
 #define SHARED_MEMORY_NUM_BYTES 4 * 1024 * 1024
+
+#define GUID_SECTION "{90CF650F-8C64-4799-AD29-D96BC77BFE32}"
+#define GUID_REQUEST_EVENT "{EFAA3FD1-2242-4F91-8915-F06D0A56B297}"
+#define GUID_COMPLETION_EVENT "{A45188BE-8DA7-4A22-9479-8E71155C0EC7}"
 
 enum Operation {
 	Read,
@@ -41,20 +46,20 @@ public:
 		pid = inPid;
 
 		// Initialize event handles
-		hRequestEvent = OpenEvent(EVENT_ALL_ACCESS, FALSE, "Global\\TsunamiSharedRequestEvent");
+		hRequestEvent = OpenEvent(EVENT_ALL_ACCESS, FALSE, "Global\\" GUID_REQUEST_EVENT);
 		if (hRequestEvent == INVALID_HANDLE_VALUE) {
 			std::cout << "[-] OpenEvent (TsunamiSharedRequestEvent) failed, Error: " << std::dec << GetLastError() << "\n";
 			throw std::runtime_error("Failed to load driver interface.");
 		}
 
-		hCompletionEvent = OpenEvent(EVENT_ALL_ACCESS, FALSE, "Global\\TsunamiSharedCompletionEvent");
+		hCompletionEvent = OpenEvent(EVENT_ALL_ACCESS, FALSE, "Global\\" GUID_COMPLETION_EVENT);
 		if (hCompletionEvent == INVALID_HANDLE_VALUE) {
 			std::cout << "[-] OpenEvent (TsunamiSharedCompletionEvent) failed, Error: " << std::dec << GetLastError() << "\n";
 			throw std::runtime_error("Failed to load driver interface.");
 		}
 
 		// Map shared memory
-		hFileMapping = OpenFileMapping(FILE_MAP_ALL_ACCESS, FALSE, "Global\\TsunamiSharedMemory");
+		hFileMapping = OpenFileMapping(FILE_MAP_ALL_ACCESS, FALSE, "Global\\" GUID_SECTION);
 		if (hFileMapping == INVALID_HANDLE_VALUE) {
 			std::cout << "[-] OpenFileMappingA failed, Error: " << std::dec << GetLastError() << "\n";
 			throw std::runtime_error("Failed to load driver interface.");
@@ -69,10 +74,6 @@ public:
 		CloseHandle(hFileMapping);
 
 		request = (PKERNEL_OPERATION_REQUEST)sharedMemoryBuffer;
-	}
-
-	~KeInterface() {
-		UnmapViewOfFile(sharedMemoryBuffer);
 	}
 
 	bool ReadVirtualMemory(ULONG64 readAddress, UCHAR* buffer, SIZE_T size)

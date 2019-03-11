@@ -1,5 +1,7 @@
 #include <ntifs.h>
 #include <windef.h>
+#include <ntstrsafe.h>
+#include <initguid.h>
 
 #ifdef DEBUG
 #define DPRINT(...) DbgPrintEx(0, 0, __VA_ARGS__)
@@ -7,6 +9,10 @@
 #define DPRINT(...)
 #endif
 #define SHARED_MEMORY_NUM_BYTES 4 * 1024 * 1024
+
+#define GUID_SECTION L"{90CF650F-8C64-4799-AD29-D96BC77BFE32}"
+#define GUID_REQUEST_EVENT L"{EFAA3FD1-2242-4F91-8915-F06D0A56B297}"
+#define GUID_COMPLETION_EVENT L"{A45188BE-8DA7-4A22-9479-8E71155C0EC7}"
 
 NTKERNELAPI NTSTATUS MmCopyVirtualMemory(
 	IN PEPROCESS       SourceProcess,
@@ -278,10 +284,17 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 
 	NTSTATUS status;
 
+	// Create names from GUID
+	UNICODE_STRING sectionName = RTL_CONSTANT_STRING(L"\\BaseNamedObjects\\" GUID_SECTION);
+	UNICODE_STRING requestEventName = RTL_CONSTANT_STRING(L"\\BaseNamedObjects\\" GUID_REQUEST_EVENT);
+	UNICODE_STRING completionEventName = RTL_CONSTANT_STRING(L"\\BaseNamedObjects\\" GUID_COMPLETION_EVENT);
+
+	DPRINT("[>] Section name: %wZ", &sectionName);
+	DPRINT("[>] Request event name: %wZ", &requestEventName);
+	DPRINT("[>] Completion event name: %wZ", &completionEventName);
+
 	// Create shared memory
 	DPRINT("[+] Creating shared memory...");
-
-	UNICODE_STRING sectionName = RTL_CONSTANT_STRING(L"\\BaseNamedObjects\\TsunamiSharedMemory");
 
 	OBJECT_ATTRIBUTES objAttributes = { 0 };
 	InitializeObjectAttributes(&objAttributes, &sectionName, OBJ_KERNEL_HANDLE, NULL, NULL);
@@ -320,11 +333,8 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	ObDereferenceObject(pContextSharedSection);
 
 	// Create named events
-	UNICODE_STRING uRequestEventName = RTL_CONSTANT_STRING(L"\\BaseNamedObjects\\TsunamiSharedRequestEvent");
-	UNICODE_STRING uCompletionEventName = RTL_CONSTANT_STRING(L"\\BaseNamedObjects\\TsunamiSharedCompletionEvent");
-
-	pSharedRequestEvent = IoCreateNotificationEvent(&uRequestEventName, &hRequestEvent);
-	pSharedCompletionEvent = IoCreateNotificationEvent(&uCompletionEventName, &hCompletionEvent);
+	pSharedRequestEvent = IoCreateNotificationEvent(&requestEventName, &hRequestEvent);
+	pSharedCompletionEvent = IoCreateNotificationEvent(&completionEventName, &hCompletionEvent);
 
 	if (!pSharedRequestEvent || !pSharedCompletionEvent) {
 		DPRINT("[-] IoCreateNotificationEvent failed.");

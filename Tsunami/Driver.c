@@ -1,8 +1,7 @@
 #include <ntifs.h>
 #include <windef.h>
-#include <ntstrsafe.h>
-#include <initguid.h>
 
+#define DEBUG
 #ifdef DEBUG
 #define DPRINT(...) DbgPrintEx(0, 0, __VA_ARGS__)
 #else
@@ -10,9 +9,9 @@
 #endif
 #define SHARED_MEMORY_NUM_BYTES 4 * 1024 * 1024
 
-#define GUID_SECTION "{90CF650F-8C64-4799-AD29-D96BC77BFE32}"
-#define GUID_REQUEST_EVENT "{EFAA3FD1-2242-4F91-8915-F06D0A56B297}"
-#define GUID_COMPLETION_EVENT "{A45188BE-8DA7-4A22-9479-8E71155C0EC7}"
+#define GUID_SECTION L"{90CF650F-8C64-4799-AD29-D96BC77BFE32}"
+#define GUID_REQUEST_EVENT L"{EFAA3FD1-2242-4F91-8915-F06D0A56B297}"
+#define GUID_COMPLETION_EVENT L"{A45188BE-8DA7-4A22-9479-8E71155C0EC7}"
 
 NTKERNELAPI NTSTATUS MmCopyVirtualMemory(
 	IN PEPROCESS       SourceProcess,
@@ -85,6 +84,8 @@ PKEVENT pSharedRequestEvent;
 HANDLE hRequestEvent;
 PKEVENT pSharedCompletionEvent;
 HANDLE hCompletionEvent;
+
+HANDLE hCallbackRegistration;
 
 NTSTATUS GetModuleBase(PEPROCESS process, LPCWSTR moduleName, ULONG64* baseAddress) {
 	// Source: https://www.unknowncheats.me/forum/c-and-c-/190555-kernel-module-base-adress.html
@@ -165,6 +166,18 @@ VOID UnloadDriver() {
 	}
 }
 
+VOID PowerStateCallback(IN PVOID context, IN PVOID pPowerStateEvent, IN PVOID pEventSpecifics) {
+	UNREFERENCED_PARAMETER(context);
+
+	if (pPowerStateEvent == (PVOID)PO_CB_SYSTEM_STATE_LOCK && !pEventSpecifics) {
+		DPRINT("[+] Power state S0 -> Sx");
+
+		PKERNEL_OPERATION_REQUEST request = (PKERNEL_OPERATION_REQUEST)pSharedSection;
+		request->operationType = Unload;
+		KeSetEvent(pSharedRequestEvent, IO_NO_INCREMENT, FALSE);
+	}
+}
+
 VOID RequestHandler(PVOID parameter)
 {
 	KIRQL oldIrql;
@@ -183,8 +196,8 @@ VOID RequestHandler(PVOID parameter)
 	while (1) {
 		// Wait for user-mode process to request a read/write/kill
 		DPRINT("\n[+] Waiting for request event...");
-		KeWaitForSingleObject(pSharedRequestEvent, Executive, KernelMode, FALSE, NULL);
-		
+		status = KeWaitForSingleObject(pSharedRequestEvent, Executive, KernelMode, FALSE, NULL);
+
 		// Clear event once received
 		KeClearEvent(pSharedRequestEvent);
 		DPRINT("[+] Event received and cleared.");
@@ -274,8 +287,10 @@ VOID RequestHandler(PVOID parameter)
 	}
 
 cleanup:
-	DPRINT("Tsunami request handler terminated.");
+	ExUnregisterCallback(hCallbackRegistration);
 	KeLowerIrql(oldIrql);
+
+	DPRINT("Tsunami request handler terminated.");
 }
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath) {
@@ -285,9 +300,9 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	NTSTATUS status;
 
 	// Create names from GUID
-	UNICODE_STRING sectionName = RTL_CONSTANT_STRING("\\BaseNamedObjects\\" GUID_SECTION);
-	UNICODE_STRING requestEventName = RTL_CONSTANT_STRING("\\BaseNamedObjects\\" GUID_REQUEST_EVENT);
-	UNICODE_STRING completionEventName = RTL_CONSTANT_STRING("\\BaseNamedObjects\\" GUID_COMPLETION_EVENT);
+	UNICODE_STRING sectionName = RTL_CONSTANT_STRING(L"\\BaseNamedObjects\\" GUID_SECTION);
+	UNICODE_STRING requestEventName = RTL_CONSTANT_STRING(L"\\BaseNamedObjects\\" GUID_REQUEST_EVENT);
+	UNICODE_STRING completionEventName = RTL_CONSTANT_STRING(L"\\BaseNamedObjects\\" GUID_COMPLETION_EVENT);
 
 	DPRINT("[>] Section name: %wZ", &sectionName);
 	DPRINT("[>] Request event name: %wZ", &requestEventName);
@@ -345,6 +360,20 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	// Clear events since they start in the signaled state
 	KeClearEvent(pSharedRequestEvent);
 	KeClearEvent(pSharedCompletionEvent);
+
+	// Initialize callback to allow for graceful shutdown of worker thread
+	UNICODE_STRING callbackName = RTL_CONSTANT_STRING(L"\\Callback\\PowerState");
+	OBJECT_ATTRIBUTES callbackAttributes = { 0 };
+	InitializeObjectAttributes(&callbackAttributes, &callbackName, OBJ_PERMANENT, NULL, NULL);
+
+	PCALLBACK_OBJECT pCallbackObject;
+	ExCreateCallback(&pCallbackObject, &callbackAttributes, FALSE, FALSE);
+
+	hCallbackRegistration = ExRegisterCallback(pCallbackObject, (PCALLBACK_FUNCTION)PowerStateCallback, NULL);
+	if (!hCallbackRegistration) {
+		DPRINT("[-] ExRegisterCallback failed.");
+		return STATUS_DRIVER_UNABLE_TO_LOAD;
+	}
 
 	// Start request handler in system worker thread
 	PWORK_QUEUE_ITEM workItem;

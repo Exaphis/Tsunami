@@ -2,7 +2,6 @@
 
 #include <Windows.h>
 #include <iostream>
-#include <initguid.h>
 
 #define SHARED_MEMORY_NUM_BYTES 4 * 1024 * 1024
 

@@ -5,9 +5,9 @@
 
 #define SHARED_MEMORY_NUM_BYTES 4 * 1024 * 1024
 
-#define GUID_SECTION "{90CF650F-8C64-4799-AD29-D96BC77BFE32}"
-#define GUID_REQUEST_EVENT "{EFAA3FD1-2242-4F91-8915-F06D0A56B297}"
-#define GUID_COMPLETION_EVENT "{A45188BE-8DA7-4A22-9479-8E71155C0EC7}"
+#define GUID_SECTION "{3FE2EC3F-7CAF-43AF-878F-85612D10AB6B}"
+#define GUID_REQUEST_EVENT "{9399F41C-E15B-4A95-8B1C-7A9EF219F61E}"
+#define GUID_COMPLETION_EVENT "{E60F327F-4C6F-4790-9E31-83862DF81EC2}"
 
 enum Operation {
 	Read,
@@ -125,7 +125,7 @@ public:
 		return request->success;
 	}
 
-	void UnloadDriver() {
+	void Unload() {
 		request->operationType = Operation::Unload;
 		SetEvent(hRequestEvent);
 	}

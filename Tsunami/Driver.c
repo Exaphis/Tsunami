@@ -1,7 +1,5 @@
-#include <ntifs.h>
-#include <windef.h>
+#include "nt.h"
 
-#define DEBUG
 #ifdef DEBUG
 #define DPRINT(...) DbgPrintEx(0, 0, __VA_ARGS__)
 #else
@@ -9,56 +7,9 @@
 #endif
 #define SHARED_MEMORY_NUM_BYTES 4 * 1024 * 1024
 
-#define GUID_SECTION L"{90CF650F-8C64-4799-AD29-D96BC77BFE32}"
-#define GUID_REQUEST_EVENT L"{EFAA3FD1-2242-4F91-8915-F06D0A56B297}"
-#define GUID_COMPLETION_EVENT L"{A45188BE-8DA7-4A22-9479-8E71155C0EC7}"
-
-NTKERNELAPI NTSTATUS MmCopyVirtualMemory(
-	IN PEPROCESS       SourceProcess,
-	IN PVOID           SourceAddress,
-	IN PEPROCESS       TargetProcess,
-	IN PVOID           TargetAddress,
-	IN SIZE_T          BufferSize,
-	IN KPROCESSOR_MODE PreviousMode,
-	OUT PSIZE_T        ReturnSize
-);
-
-NTKERNELAPI PPEB NTAPI PsGetProcessPeb(
-	IN PEPROCESS Process
-);
-
-typedef struct _PEB_LDR_DATA {
-	ULONG      Length;
-	BOOLEAN    Initialized;
-	PVOID      SsHandle;
-	LIST_ENTRY InLoadOrderModuleList;
-	LIST_ENTRY InMemoryOrderModuleList;
-	LIST_ENTRY InInitializationOrderModuleList;
-} PEB_LDR_DATA, *PPEB_LDR_DATA;
-
-typedef struct _LDR_DATA_TABLE_ENTRY
-{
-	LIST_ENTRY     InLoadOrderLinks;
-	LIST_ENTRY     InMemoryOrderLinks;
-	LIST_ENTRY     InInitializationOrderLinks;
-	PVOID          DllBase;
-	PVOID          Entrypoint;
-	ULONG          SizeOfImage;
-	UNICODE_STRING FullDllName;
-	UNICODE_STRING BaseDllName;
-} LDR_DATA_TABLE_ENTRY, *PLDR_DATA_TABLE_ENTRY;
-
-typedef struct _PEB {
-	BYTE          Reserved1[2];
-	BYTE          BeingDebugged;
-	BYTE          Reserved2[21];
-	PPEB_LDR_DATA LoaderData;
-	PVOID         ProcessParameters;
-	BYTE          Reserved3[520];
-	PVOID         PostProcessInitRoutine;
-	BYTE          Reserved4[136];
-	ULONG         SessionId;
-} PEB, *PPEB;
+#define GUID_SECTION L"{3FE2EC3F-7CAF-43AF-878F-85612D10AB6B}"
+#define GUID_REQUEST_EVENT L"{9399F41C-E15B-4A95-8B1C-7A9EF219F61E}"
+#define GUID_COMPLETION_EVENT L"{E60F327F-4C6F-4790-9E31-83862DF81EC2}"
 
 typedef enum Operation {
 	Read,
@@ -66,6 +17,15 @@ typedef enum Operation {
 	GetModule,
 	Unload
 } Operation;
+
+typedef struct _REQUEST_HANDLER_CONTEXT {
+	PVOID pSharedSection;
+	HANDLE hSection;
+	PKEVENT pSharedRequestEvent;
+	HANDLE hRequestEvent;
+	PKEVENT pSharedCompletionEvent;
+	HANDLE hCompletionEvent;
+} REQUEST_HANDLER_CONTEXT, *PREQUEST_HANDLER_CONTEXT;
 
 typedef struct _KERNEL_OPERATION_REQUEST
 {
@@ -76,16 +36,6 @@ typedef struct _KERNEL_OPERATION_REQUEST
 	SIZE_T size;
 	UCHAR data[SHARED_MEMORY_NUM_BYTES];
 } _KERNEL_OPERATION_REQUEST, *PKERNEL_OPERATION_REQUEST;
-
-PVOID pSharedSection;
-HANDLE hSection;
-
-PKEVENT pSharedRequestEvent;
-HANDLE hRequestEvent;
-PKEVENT pSharedCompletionEvent;
-HANDLE hCompletionEvent;
-
-HANDLE hCallbackRegistration;
 
 NTSTATUS GetModuleBase(PEPROCESS process, LPCWSTR moduleName, ULONG64* baseAddress) {
 	// Source: https://www.unknowncheats.me/forum/c-and-c-/190555-kernel-module-base-adress.html
@@ -99,14 +49,14 @@ NTSTATUS GetModuleBase(PEPROCESS process, LPCWSTR moduleName, ULONG64* baseAddre
 	PPEB peb = PsGetProcessPeb(process);
 	if (!peb) {
 		KeUnstackDetachProcess(&apcState);
-		DPRINT("[-] PsGetProcessPeb failed.");
+		DPRINT("[-] PsGetProcessPeb failed.\n");
 		return STATUS_UNSUCCESSFUL;
 	}
 
 	PPEB_LDR_DATA ldr = peb->LoaderData;
 	if (!ldr) {
 		KeUnstackDetachProcess(&apcState);
-		DPRINT("[-] peb->LoaderData is invalid.");
+		DPRINT("[-] peb->LoaderData is invalid.\n");
 		return STATUS_UNSUCCESSFUL;
 	}
 
@@ -120,14 +70,14 @@ NTSTATUS GetModuleBase(PEPROCESS process, LPCWSTR moduleName, ULONG64* baseAddre
 
 		if (!ldr->Initialized) {
 			KeUnstackDetachProcess(&apcState);
-			DPRINT("[-] LoaderData not initialized.");
+			DPRINT("[-] LoaderData not initialized.\n");
 			return STATUS_UNSUCCESSFUL;
 		}
 	}
 
 	for (PLIST_ENTRY listEntry = (PLIST_ENTRY)ldr->InLoadOrderModuleList.Flink; listEntry != &ldr->InLoadOrderModuleList; listEntry = (PLIST_ENTRY)listEntry->Flink) {
 		PLDR_DATA_TABLE_ENTRY ldrEntry = CONTAINING_RECORD(listEntry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
-		DPRINT("Module name: %ls, base: %p", ldrEntry->BaseDllName.Buffer, ldrEntry->DllBase);
+		DPRINT("Module name: %ls, base: %p\n", ldrEntry->BaseDllName.Buffer, ldrEntry->DllBase);
 		if (RtlEqualUnicodeString(&ldrEntry->BaseDllName, &uModuleName, TRUE)) {
 			*baseAddress = (ULONG64)ldrEntry->DllBase;
 			KeUnstackDetachProcess(&apcState);
@@ -136,79 +86,68 @@ NTSTATUS GetModuleBase(PEPROCESS process, LPCWSTR moduleName, ULONG64* baseAddre
 	}
 
 	KeUnstackDetachProcess(&apcState);
-	DPRINT("Module not found.");
+	DPRINT("Module not found.\n");
 	return STATUS_NOT_FOUND;
 }
 
-VOID UnloadDriver() {
+VOID UnloadDriver(PREQUEST_HANDLER_CONTEXT context) {
 	// Unmap view of section in kernel address space
-	if (pSharedSection) {
-		if (!NT_SUCCESS(MmUnmapViewInSystemSpace(pSharedSection))) {
-			DPRINT("[-] MmUnmapViewInSystemSpace failed.");
+	if (context->pSharedSection) {
+		if (!NT_SUCCESS(MmUnmapViewInSystemSpace(context->pSharedSection))) {
+			DPRINT("[-] MmUnmapViewInSystemSpace failed.\n");
 		}
-		DPRINT("Shared section unmapped.");
+		DPRINT("Shared section unmapped.\n");
 	}
 
 	// Close handle to section
-	if (hSection) {
-		ZwClose(hSection);
-		DPRINT("Handle to section closed.");
+	if (context->hSection) {
+		ZwClose(context->hSection);
+		DPRINT("Handle to section closed.\n");
 	}
 
 	// Close handles to events
-	if (hRequestEvent) {
-		ZwClose(hRequestEvent);
-		DPRINT("Handle to request event closed.");
+	if (context->hRequestEvent) {
+		ZwClose(context->hRequestEvent);
+		DPRINT("Handle to request event closed.\n");
 	}
-	if (hCompletionEvent) {
-		ZwClose(hCompletionEvent);
-		DPRINT("Handle to completion event closed.");
+	if (context->hCompletionEvent) {
+		ZwClose(context->hCompletionEvent);
+		DPRINT("Handle to completion event closed.\n");
 	}
-}
 
-VOID PowerStateCallback(IN PVOID context, IN PVOID pPowerStateEvent, IN PVOID pEventSpecifics) {
-	UNREFERENCED_PARAMETER(context);
-
-	if (pPowerStateEvent == (PVOID)PO_CB_SYSTEM_STATE_LOCK && !pEventSpecifics) {
-		DPRINT("[+] Power state S0 -> Sx");
-
-		PKERNEL_OPERATION_REQUEST request = (PKERNEL_OPERATION_REQUEST)pSharedSection;
-		request->operationType = Unload;
-		KeSetEvent(pSharedRequestEvent, IO_NO_INCREMENT, FALSE);
-	}
+	// Weird bug when freeing pool, results in BAD_POOL_HEADER bugcheck!
+	//ExFreePool(context);
 }
 
 VOID RequestHandler(PVOID parameter)
 {
-	KIRQL oldIrql;
-	KeRaiseIrql(APC_LEVEL, &oldIrql);
-
-	// Free work item pool
-	ExFreePoolWithTag(parameter, 'looP');
+	PREQUEST_HANDLER_CONTEXT context = (PREQUEST_HANDLER_CONTEXT)parameter;
 
 	NTSTATUS status;
 	SIZE_T bytes;
 	PEPROCESS process;
-	PKERNEL_OPERATION_REQUEST request = (PKERNEL_OPERATION_REQUEST)pSharedSection;
+	PKERNEL_OPERATION_REQUEST request = (PKERNEL_OPERATION_REQUEST)context->pSharedSection;
 
-	DPRINT("[+] Tsunami loaded.");
+	DPRINT("[+] Tsunami loaded.\n");
+	DPRINT("current irql: %d\n", KeGetCurrentIrql());
+	DPRINT("pSharedSection = 0x%p\n", context->pSharedSection);
 
 	while (1) {
 		// Wait for user-mode process to request a read/write/kill
-		DPRINT("\n[+] Waiting for request event...");
-		status = KeWaitForSingleObject(pSharedRequestEvent, Executive, KernelMode, FALSE, NULL);
+		DPRINT("\n[+] Waiting for request event...\n");
+		status = KeWaitForSingleObject(context->pSharedRequestEvent, Executive, KernelMode, FALSE, NULL);
 
 		// Clear event once received
-		KeClearEvent(pSharedRequestEvent);
-		DPRINT("[+] Event received and cleared.");
-		DPRINT("Request type: %d", request->operationType);
+		KeClearEvent(context->pSharedRequestEvent);
+		DPRINT("[+] Event received and cleared.\n");
+		DPRINT("Request type: %d\n", request->operationType);
 
 		switch (request->operationType) {
 
 		// Read request
 		case Read:
-			DPRINT("Read request received.");
-			DPRINT("PID: %lu, address: 0x%I64X, size: %lu ", request->processID, request->address, request->size);
+			DPRINT("Read request received.\n");
+			DPRINT("PID: %lu, address: 0x%I64X, size: %lu\n", request->processID, request->address, request->size);
 
 			status = PsLookupProcessByProcessId((HANDLE)request->processID, &process);
 
@@ -217,11 +156,11 @@ VOID RequestHandler(PVOID parameter)
 				ObDereferenceObject(process);
 
 				if (!NT_SUCCESS(status)) {
-					DPRINT("[-] MmCopyVirtualMemory failed. Status: %p", status);
+					DPRINT("[-] MmCopyVirtualMemory failed. Status: %p\n", status);
 				}
 			}
 			else {
-				DPRINT("[-] PsLookupProcessByProcessId failed. Status: %p", status);
+				DPRINT("[-] PsLookupProcessByProcessId failed. Status: %p\n", status);
 			}
 
 			request->success = NT_SUCCESS(status);
@@ -229,8 +168,8 @@ VOID RequestHandler(PVOID parameter)
 
 		// Write request
 		case Write:
-			DPRINT("Write request received.");
-			DPRINT("PID: %lu, address: 0x%I64X, size: %lu ", request->processID, request->address, request->size);
+			DPRINT("Write request received.\n");
+			DPRINT("PID: %lu, address: 0x%I64X, size: %lu\n", request->processID, request->address, request->size);
 
 			status = PsLookupProcessByProcessId((HANDLE)request->processID, &process);
 
@@ -239,11 +178,11 @@ VOID RequestHandler(PVOID parameter)
 				ObDereferenceObject(process);
 
 				if (!NT_SUCCESS(status)) {
-					DPRINT("[-] MmCopyVirtualMemory failed. Status: %p", status);
+					DPRINT("[-] MmCopyVirtualMemory failed. Status: %p\n", status);
 				}
 			}
 			else {
-				DPRINT("[-] PsLookupProcessByProcessId failed. Status: %p", status);
+				DPRINT("[-] PsLookupProcessByProcessId failed. Status: %p\n", status);
 			}
 
 			request->success = NT_SUCCESS(status);
@@ -251,10 +190,10 @@ VOID RequestHandler(PVOID parameter)
 		
 		// Module base request
 		case GetModule:
-			DPRINT("GetModuleBase request received.");
+			DPRINT("GetModuleBase request received.\n");
 
 			LPCWSTR moduleName = (LPCWSTR)request->data;
-			DPRINT("PID: %lu, module name: %ls", request->processID, moduleName);
+			DPRINT("PID: %lu, module name: %ls\n", request->processID, moduleName);
 
 			status = PsLookupProcessByProcessId((HANDLE)request->processID, &process);
 			if (NT_SUCCESS(status)) {
@@ -262,14 +201,14 @@ VOID RequestHandler(PVOID parameter)
 				ObDereferenceObject(process);
 
 				if (NT_SUCCESS(status)) {
-					DPRINT("GetModuleBase succeeded, module base: 0x%I64X", *(ULONG64*)request->data);
+					DPRINT("GetModuleBase succeeded, module base: 0x%I64X\n", *(ULONG64*)request->data);
 				}
 				else {
-					DPRINT("GetModuleBase failed. Status: %p", status);
+					DPRINT("GetModuleBase failed. Status: %p\n", status);
 				}
 			}
 			else {
-				DPRINT("[-] PsLookupProcessByProcessId failed. Status: %p", status);
+				DPRINT("[-] PsLookupProcessByProcessId failed. Status: %p\n", status);
 			}
 
 			request->success = NT_SUCCESS(status);
@@ -277,20 +216,45 @@ VOID RequestHandler(PVOID parameter)
 
 		// Unload request
 		case Unload:
-			DPRINT("Unload request received.");
-			UnloadDriver();
+			DPRINT("Unload request received.\n");
+			UnloadDriver(context);
 			goto cleanup;
 		}
 
 		// Notify user-mode process that processing has completed
-		KeSetEvent(pSharedCompletionEvent, IO_NO_INCREMENT, FALSE);
+		KeSetEvent(context->pSharedCompletionEvent, IO_NO_INCREMENT, FALSE);
 	}
 
 cleanup:
-	ExUnregisterCallback(hCallbackRegistration);
-	KeLowerIrql(oldIrql);
+	DPRINT("Tsunami request handler terminated.\n");
+	PsTerminateSystemThread(STATUS_SUCCESS);
+}
 
-	DPRINT("Tsunami request handler terminated.");
+PVOID FindPattern(PVOID start, SIZE_T length, LPCSTR pattern, LPCSTR mask) {
+	PCHAR data = (PCHAR)start;
+	SIZE_T patternLength = strlen(mask);
+
+	for (SIZE_T i = 0; i <= length - patternLength; i++) {
+		BOOLEAN found = TRUE;
+
+		for (SIZE_T j = 0; j < patternLength; j++) {
+			if (!MmIsAddressValid((PVOID)((ULONG64)data + i + j))) {
+				found = FALSE;
+				break;
+			}
+
+			if (mask[j] != '?' && data[i + j] != pattern[j]) {
+				found = FALSE;
+				break;
+			}
+		}
+
+		if (found) {
+			return (PVOID)((ULONG64)data + i);
+		}
+	}
+
+	return NULL;
 }
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath) {
@@ -299,17 +263,153 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 
 	NTSTATUS status;
 
+	PVOID pSharedSection;
+	HANDLE hSection;
+
+	PKEVENT pSharedRequestEvent;
+	HANDLE hRequestEvent;
+	PKEVENT pSharedCompletionEvent;
+	HANDLE hCompletionEvent;
+
+	PVOID kernelBaseAddress = *(VOID**)((ULONG64)PsLoadedModuleList + 0x30);
+	SIZE_T kernelBaseSize = *(SIZE_T*)((ULONG64)PsLoadedModuleList + 0x40);
+	MiGetPteAddress = (PMMPTE (*)(PVOID))FindPattern(kernelBaseAddress, kernelBaseSize, "\x48\xC1\xE9\x09\x48\xB8\xF8\xFF\xFF\xFF\x7F\x00\x00\x00\x48\x23\xC8\x48\xB8\x00\x00\x00\x00\x00\x00\x00\x00\x48\x03\xC1\xC3", "xxxxxxxxxxxxxxxxxxx????????xxxx");
+	if (MiGetPteAddress == NULL) {
+		DPRINT("MiGetPteAddress is null\n");
+	}
+
+	DPRINT("[>] UnloadDriver: %p\n", UnloadDriver);
+	DPRINT("[>] RequestHandler: %p\n", RequestHandler);
+	DPRINT("[>] DriverEntry: %p\n", DriverEntry);
+
+	// Locate the DOS and NT headers of our driver image to find its size
+	// Find DOS header
+	PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)((ULONG64)DriverEntry - 0x1000);
+	while (dosHeader->e_magic != 'ZM') {
+		dosHeader -= 0x1000;
+	}
+	
+	DPRINT("base address: %p\n", dosHeader);
+	DPRINT("dos header magic: %.*s\n", 2, &dosHeader->e_magic);
+
+	// Find NT header
+	PIMAGE_NT_HEADERS64 ntHeader = (PIMAGE_NT_HEADERS64)((ULONG64)dosHeader + dosHeader->e_lfanew);
+	if (ntHeader->Signature != 'EP') {
+		DPRINT("nt header magic incorrect.\n");
+	}
+	else if (ntHeader->OptionalHeader.Magic != 0x20B) {
+		DPRINT("image not 64 bit.\n");
+	}
+
+	DPRINT("nt header magic: %.*s\n", 4, &ntHeader->Signature);
+	DPRINT("optional header magic: 0x%hx\n", ntHeader->OptionalHeader.Magic);
+	DPRINT("image size: 0x%lx\n", ntHeader->OptionalHeader.SizeOfImage);
+	DPRINT("entry point offset: 0x%lx\n", ntHeader->OptionalHeader.AddressOfEntryPoint);
+
+	// Find discardable section to hijack (Source: https://www.unknowncheats.me/forum/anti-cheat-bypass/327295-driver-discardable-section-device-dispatch-hijacking-bypass.html)
+	// First, iterate all driver objects (Source: https://www.unknowncheats.me/forum/c-and-c-/274073-iterating-driver_objects.html)
+	HANDLE directoryHandle;
+	UNICODE_STRING dirName = RTL_CONSTANT_STRING(L"\\Driver");
+	OBJECT_ATTRIBUTES dirAttributes = { 0 };
+	InitializeObjectAttributes(&dirAttributes, &dirName, OBJ_CASE_INSENSITIVE, NULL, NULL);
+
+	status = ZwOpenDirectoryObject(&directoryHandle, DIRECTORY_ALL_ACCESS, &dirAttributes);
+	if (!NT_SUCCESS(status)) {
+		DPRINT("ZwOpenDirectoryObject failed.\n");
+		return STATUS_DRIVER_UNABLE_TO_LOAD;
+	}
+
+	POBJECT_DIRECTORY directoryObject;
+	status = ObReferenceObjectByHandle(directoryHandle, DIRECTORY_ALL_ACCESS, NULL, KernelMode, &directoryObject, NULL);
+	if (!NT_SUCCESS(status)) {
+		ZwClose(directoryHandle);
+		DPRINT("ObReferenceObjectByHandle failed.\n");
+		return STATUS_DRIVER_UNABLE_TO_LOAD;
+	}
+
+	PIMAGE_SECTION_HEADER discardableSectionHeader = NULL;
+	PDRIVER_OBJECT targetDriverObject = NULL;
+
+	ExAcquirePushLockExclusiveEx(&directoryObject->Lock, 0);
+	for (SIZE_T i = 0; i < OBJECT_HASH_TABLE_SIZE; i++) {
+		POBJECT_DIRECTORY_ENTRY entry = directoryObject->HashBuckets[i];
+
+		if (entry == NULL) {
+			continue;
+		}
+
+		while (entry != NULL && entry->Object != NULL) {
+			PDRIVER_OBJECT driver = (PDRIVER_OBJECT)entry->Object;
+
+			DPRINT("DriverName: %wZ\n", &driver->DriverName);
+
+			PIMAGE_NT_HEADERS driverNtHeader = RtlImageNtHeader(driver->DriverStart);
+			PIMAGE_SECTION_HEADER firstSection = IMAGE_FIRST_SECTION(driverNtHeader);
+
+			for (PIMAGE_SECTION_HEADER section = firstSection; section < firstSection + driverNtHeader->FileHeader.NumberOfSections; section++)
+			{
+				// assume INIT section is RWX - implement assert
+				if (section->Characteristics & 0x02000000 && section->Misc.VirtualSize >= ntHeader->OptionalHeader.SizeOfImage) // IMAGE_SCN_MEM_DISCARDABLE
+				{
+					DPRINT("    Section @ %p\n    Size: 0x%lx\n", section, section->Misc.VirtualSize);
+
+					discardableSectionHeader = section;
+					targetDriverObject = driver;
+					goto sectionFound;
+				}
+			}
+
+			entry = entry->ChainLink;
+		}
+	}
+
+sectionFound:
+	ExReleasePushLockExclusiveEx(&directoryObject->Lock, 0);
+	ObDereferenceObject(directoryObject);
+	ZwClose(directoryHandle);
+
+	if (!discardableSectionHeader) {
+		DPRINT("appropriate discardable section not found\n");
+		return STATUS_DRIVER_UNABLE_TO_LOAD;
+	}
+	
+	DPRINT("discardable section found @ 0x%p\n", discardableSectionHeader);
+
+	PVOID discardableSection = (PVOID)((ULONG64)targetDriverObject->DriverStart + discardableSectionHeader->VirtualAddress);
+	// Allocate buffer for new discardable section
+	PVOID discardableAllocatedBuffer = ExAllocatePool(NonPagedPoolExecute, ROUND_TO_PAGES(ntHeader->OptionalHeader.SizeOfImage));
+	if (!discardableAllocatedBuffer) {
+		DPRINT("ExAllocatePool for discardableAllocatedBuffer failed.\n");
+		return STATUS_DRIVER_UNABLE_TO_LOAD;
+	}
+
+	// Replace discardable section PTEs
+	for (SIZE_T i = 0; i < ROUND_TO_PAGES(ntHeader->OptionalHeader.SizeOfImage); i += PAGE_SIZE) {
+		PMMPTE discardableSectionPte = MiGetPteAddress((PVOID)((ULONG64)discardableSection + i));
+		PMMPTE discardableAllocatedBufferPte = MiGetPteAddress((PVOID)((ULONG64)discardableAllocatedBuffer + i));
+
+		DPRINT("offset 0x%llx\n", i);
+		DPRINT("    discardable section pte @ 0x%p\n", discardableSectionPte);
+		DPRINT("    allocated pte @ 0x%p\n", discardableAllocatedBufferPte);
+
+		*discardableSectionPte = *discardableAllocatedBufferPte;
+	}
+
+	memcpy(discardableSection, (PVOID)dosHeader, ntHeader->OptionalHeader.SizeOfImage);
+
+	DPRINT("sections copied.\n");
+
 	// Create names from GUID
 	UNICODE_STRING sectionName = RTL_CONSTANT_STRING(L"\\BaseNamedObjects\\" GUID_SECTION);
 	UNICODE_STRING requestEventName = RTL_CONSTANT_STRING(L"\\BaseNamedObjects\\" GUID_REQUEST_EVENT);
 	UNICODE_STRING completionEventName = RTL_CONSTANT_STRING(L"\\BaseNamedObjects\\" GUID_COMPLETION_EVENT);
 
-	DPRINT("[>] Section name: %wZ", &sectionName);
-	DPRINT("[>] Request event name: %wZ", &requestEventName);
-	DPRINT("[>] Completion event name: %wZ", &completionEventName);
+	DPRINT("[>] Section name: %wZ\n", &sectionName);
+	DPRINT("[>] Request event name: %wZ\n", &requestEventName);
+	DPRINT("[>] Completion event name: %wZ\n", &completionEventName);
 
 	// Create shared memory
-	DPRINT("[+] Creating shared memory...");
+	DPRINT("[+] Creating shared memory...\n");
 
 	OBJECT_ATTRIBUTES objAttributes = { 0 };
 	InitializeObjectAttributes(&objAttributes, &sectionName, OBJ_KERNEL_HANDLE, NULL, NULL);
@@ -319,17 +419,17 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	status = ZwCreateSection(&hSection, SECTION_ALL_ACCESS, &objAttributes, &lMaxSize, PAGE_READWRITE, SEC_COMMIT, NULL);
 	if (!NT_SUCCESS(status))
 	{
-		DPRINT("[-] ZwCreateSection failed. Status: %p", status);
+		DPRINT("[-] ZwCreateSection failed. Status: %p\n", status);
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
-	DPRINT("[+] Shared memory created.");
+	DPRINT("[+] Shared memory created.\n");
 
 	// Get pointer to shared section in context
 	PVOID pContextSharedSection;
 	status = ObReferenceObjectByHandle(hSection, SECTION_ALL_ACCESS, NULL, KernelMode, &pContextSharedSection, NULL);
 	if (!NT_SUCCESS(status))
 	{
-		DPRINT("[-] ObReferenceObjectByHandle failed. Status: %p", status);
+		DPRINT("[-] ObReferenceObjectByHandle failed. Status: %p\n", status);
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
 
@@ -338,11 +438,11 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	status = MmMapViewInSystemSpace(pContextSharedSection, &pSharedSection, &ulViewSize);
 	if (!NT_SUCCESS(status))
 	{
-		DPRINT("[-] MmMapViewInSystemSpace failed. Status: %p", status);
+		DPRINT("[-] MmMapViewInSystemSpace failed. Status: %p\n", status);
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
-	DPRINT("[+] MmMapViewInSystemSpace completed.");
-	DPRINT("pSharedSection = 0x%p", pSharedSection);
+	DPRINT("[+] MmMapViewInSystemSpace completed.\n");
+	DPRINT("pSharedSection = 0x%p\n", pSharedSection);
 
 	// Dereference shared section object
 	ObDereferenceObject(pContextSharedSection);
@@ -352,34 +452,42 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	pSharedCompletionEvent = IoCreateNotificationEvent(&completionEventName, &hCompletionEvent);
 
 	if (!pSharedRequestEvent || !pSharedCompletionEvent) {
-		DPRINT("[-] IoCreateNotificationEvent failed.");
+		DPRINT("[-] IoCreateNotificationEvent failed.\n");
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
-	DPRINT("[+] IoCreateNotificationEvent completed.");
+	DPRINT("[+] IoCreateNotificationEvent completed.\n");
 
 	// Clear events since they start in the signaled state
 	KeClearEvent(pSharedRequestEvent);
 	KeClearEvent(pSharedCompletionEvent);
 
-	// Initialize callback to allow for graceful shutdown of worker thread
-	UNICODE_STRING callbackName = RTL_CONSTANT_STRING(L"\\Callback\\PowerState");
-	OBJECT_ATTRIBUTES callbackAttributes = { 0 };
-	InitializeObjectAttributes(&callbackAttributes, &callbackName, OBJ_PERMANENT, NULL, NULL);
+	// Start request handler in new thread
 
-	PCALLBACK_OBJECT pCallbackObject;
-	ExCreateCallback(&pCallbackObject, &callbackAttributes, FALSE, FALSE);
+	// Initialize context structure so new thread can access events and shared section (new thread can't access our global variables since it's in a different area)
+	PREQUEST_HANDLER_CONTEXT context = ExAllocatePool(NonPagedPoolNx, sizeof(PREQUEST_HANDLER_CONTEXT));
+	if (!context) {
+		DPRINT("ExAllocatePool for PREQUEST_HANDLER_CONTEXT failed.\n");
+		return STATUS_DRIVER_UNABLE_TO_LOAD;
+	}
+	context->hCompletionEvent = hCompletionEvent;
+	context->hRequestEvent = hRequestEvent;
+	context->hSection = hSection;
+	context->pSharedCompletionEvent = pSharedCompletionEvent;
+	context->pSharedRequestEvent = pSharedRequestEvent;
+	context->pSharedSection = pSharedSection;
 
-	hCallbackRegistration = ExRegisterCallback(pCallbackObject, (PCALLBACK_FUNCTION)PowerStateCallback, NULL);
-	if (!hCallbackRegistration) {
-		DPRINT("[-] ExRegisterCallback failed.");
+	DPRINT("context @ 0x%p\n", context);
+
+	// Create new system thread, pass in our initialize context
+	HANDLE hThread;
+	OBJECT_ATTRIBUTES threadAttributes = { 0 };
+	InitializeObjectAttributes(&threadAttributes, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
+	status = PsCreateSystemThread(&hThread, THREAD_ALL_ACCESS, &threadAttributes, NULL, NULL, (PKSTART_ROUTINE)((ULONG64)RequestHandler - (ULONG64)dosHeader + (ULONG64)discardableSection), (PVOID)context);
+	if (!NT_SUCCESS(status))
+	{
+		DPRINT("[-] PsCreateSystemThread fail! Status: %p\n", status);
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
 
-	// Start request handler in system worker thread
-	PWORK_QUEUE_ITEM workItem;
-	workItem = ExAllocatePoolWithTag(NonPagedPool, sizeof(WORK_QUEUE_ITEM), 'looP');
-	ExInitializeWorkItem(workItem, (PWORKER_THREAD_ROUTINE)RequestHandler, workItem);
-	ExQueueWorkItem(workItem, DelayedWorkQueue);
-	
 	return STATUS_SUCCESS;
 }

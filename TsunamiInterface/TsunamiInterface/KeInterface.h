@@ -21,7 +21,7 @@ struct _KERNEL_OPERATION_REQUEST
 	Operation operationType;
 	BOOLEAN success;
 	ULONG64 processID;
-	ULONG64 address;
+	ULONG_PTR address;
 	SIZE_T size;
 	UCHAR data[SHARED_MEMORY_NUM_BYTES];
 };
@@ -75,7 +75,7 @@ public:
 		request = (PKERNEL_OPERATION_REQUEST)sharedMemoryBuffer;
 	}
 
-	bool ReadVirtualMemory(ULONG64 readAddress, UCHAR* buffer, SIZE_T size)
+	bool ReadVirtualMemory(ULONG_PTR readAddress, UCHAR* buffer, SIZE_T size)
 	{
 		if (size > sizeof(request->data))
 			return false;
@@ -95,7 +95,7 @@ public:
 		return false;
 	}
 
-	bool WriteVirtualMemory(ULONG64 writeAddress, UCHAR* buffer, SIZE_T size)
+	bool WriteVirtualMemory(ULONG_PTR writeAddress, UCHAR* buffer, SIZE_T size)
 	{
 		if (size > sizeof(request->data))
 			return false;
@@ -112,7 +112,7 @@ public:
 		return request->success;
 	}
 
-	bool GetModuleBase(LPCWSTR moduleName, ULONG64* base) {
+	bool GetModuleBase(LPCWSTR moduleName, ULONG_PTR* base) {
 		request->operationType = Operation::GetModule;
 		request->processID = pid;
 		wcscpy_s((wchar_t*)request->data, sizeof(request->data), moduleName);
@@ -120,7 +120,7 @@ public:
 		SignalObjectAndWait(hRequestEvent, hCompletionEvent, INFINITE, FALSE);
 		ResetEvent(hCompletionEvent);
 
-		*base = *(ULONG64*)request->data;
+		*base = *(ULONG_PTR*)request->data;
 
 		return request->success;
 	}
@@ -131,7 +131,7 @@ public:
 	}
 
 	template <typename type>
-	type Read(ULONG64 readAddress)
+	type Read(ULONG_PTR readAddress)
 	{
 		UCHAR buffer[sizeof(type)];
 		if (ReadVirtualMemory(readAddress, buffer, sizeof(type)))
@@ -141,7 +141,7 @@ public:
 	}
 
 	template <typename type>
-	type Read(ULONG64 readAddress, bool* success)
+	type Read(ULONG_PTR readAddress, bool* success)
 	{
 		UCHAR buffer[sizeof(type)];
 		*success = ReadVirtualMemory(readAddress, buffer, sizeof(type));
@@ -150,7 +150,7 @@ public:
 
 
 	template <typename type>
-	bool Write(ULONG64 address, type buffer)
+	bool Write(ULONG_PTR address, type buffer)
 	{
 		return WriteVirtualMemory(address, (UCHAR*)&buffer, sizeof(type));
 	}

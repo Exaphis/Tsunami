@@ -213,15 +213,6 @@ typedef struct _OBJECT_DIRECTORY
 	ULONG Flags;
 } OBJECT_DIRECTORY, *POBJECT_DIRECTORY;
 
-struct _DEVICE_MAP
-{
-	POBJECT_DIRECTORY DosDevicesDirectory;
-	POBJECT_DIRECTORY GlobalDosDevicesDirectory;
-	ULONG ReferenceCount;
-	ULONG DriveMap;
-	UCHAR DriveType[32];
-};
-
 extern DECLSPEC_IMPORT POBJECT_TYPE* IoDriverObjectType;
 extern DECLSPEC_IMPORT PLIST_ENTRY PsLoadedModuleList;
 
@@ -232,3 +223,28 @@ PMMPTE(NTAPI *MiGetPteAddress)(PVOID VirtualAddress);
      FIELD_OFFSET( IMAGE_NT_HEADERS64, OptionalHeader ) +                 \
      ((ntheader))->FileHeader.SizeOfOptionalHeader                      \
     ))
+
+typedef struct _PiDDBCacheEntry
+{
+	LIST_ENTRY		List;
+	UNICODE_STRING	DriverName;
+	ULONG			TimeDateStamp;
+	NTSTATUS		LoadStatus;
+	char			_0x0028[16]; // data from the shim engine, or uninitialized memory for custom drivers
+} PiDDBCacheEntry;
+
+PVOID ResolveRelativeAddress(
+	_In_ PVOID Instruction,
+	_In_ ULONG OffsetOffset,
+	_In_ ULONG InstructionSize
+)
+{
+	ULONG_PTR Instr = (ULONG_PTR)Instruction;
+	LONG RipOffset = *(PLONG)(Instr + OffsetOffset);
+	PVOID ResolvedAddr = (PVOID)(Instr + InstructionSize + RipOffset);
+
+	return ResolvedAddr;
+}
+
+PVOID kernelBaseAddress;
+SIZE_T kernelBaseSize;

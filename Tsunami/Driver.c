@@ -1,6 +1,5 @@
 #include "nt.h"
 
-#define DEBUG
 #ifdef DEBUG
 #define DPRINT(...) DbgPrintEx(0, 0, __VA_ARGS__)
 #else
@@ -19,14 +18,14 @@ typedef enum Operation {
 	Unload
 } Operation;
 
-typedef struct _REQUEST_HANDLER_CONTEXT {
+typedef struct _REQUEST_HANDLER_PARAMS {
 	PVOID pSharedSection;
 	HANDLE hSection;
 	PKEVENT pSharedRequestEvent;
 	HANDLE hRequestEvent;
 	PKEVENT pSharedCompletionEvent;
 	HANDLE hCompletionEvent;
-} REQUEST_HANDLER_CONTEXT, *PREQUEST_HANDLER_CONTEXT;
+} REQUEST_HANDLER_PARAMS, *PREQUEST_HANDLER_PARAMS;
 
 typedef struct _KERNEL_OPERATION_REQUEST
 {
@@ -36,7 +35,7 @@ typedef struct _KERNEL_OPERATION_REQUEST
 	ULONG_PTR address;
 	SIZE_T size;
 	UCHAR data[SHARED_MEMORY_NUM_BYTES];
-} _KERNEL_OPERATION_REQUEST, *PKERNEL_OPERATION_REQUEST;
+} KERNEL_OPERATION_REQUEST, *PKERNEL_OPERATION_REQUEST;
 
 NTSTATUS GetModuleBase(PEPROCESS process, LPCWSTR moduleName, ULONG_PTR* baseAddress) {
 	// Source: https://www.unknowncheats.me/forum/c-and-c-/190555-kernel-module-base-adress.html
@@ -91,7 +90,7 @@ NTSTATUS GetModuleBase(PEPROCESS process, LPCWSTR moduleName, ULONG_PTR* baseAdd
 	return STATUS_NOT_FOUND;
 }
 
-VOID UnloadDriver(PREQUEST_HANDLER_CONTEXT context) {
+VOID UnloadDriver(PREQUEST_HANDLER_PARAMS context) {
 	// Unmap view of section in kernel address space
 	if (context->pSharedSection) {
 		if (!NT_SUCCESS(MmUnmapViewInSystemSpace(context->pSharedSection))) {
@@ -121,24 +120,24 @@ VOID UnloadDriver(PREQUEST_HANDLER_CONTEXT context) {
 
 VOID RequestHandler(PVOID parameter)
 {
-	PREQUEST_HANDLER_CONTEXT context = (PREQUEST_HANDLER_CONTEXT)parameter;
+	PREQUEST_HANDLER_PARAMS params = (PREQUEST_HANDLER_PARAMS)parameter;
 
 	NTSTATUS status;
 	SIZE_T bytes;
 	PEPROCESS process;
-	PKERNEL_OPERATION_REQUEST request = (PKERNEL_OPERATION_REQUEST)context->pSharedSection;
+	PKERNEL_OPERATION_REQUEST request = (PKERNEL_OPERATION_REQUEST)params->pSharedSection;
 
 	DPRINT("[+] Tsunami loaded.\n");
 	DPRINT("current irql: %d\n", KeGetCurrentIrql());
-	DPRINT("pSharedSection = 0x%p\n", context->pSharedSection);
+	DPRINT("pSharedSection = 0x%p\n", params->pSharedSection);
 
 	while (1) {
 		// Wait for user-mode process to request a read/write/kill
 		DPRINT("\n[+] Waiting for request event...\n");
-		status = KeWaitForSingleObject(context->pSharedRequestEvent, Executive, KernelMode, FALSE, NULL);
+		status = KeWaitForSingleObject(params->pSharedRequestEvent, Executive, KernelMode, FALSE, NULL);
 
 		// Clear event once received
-		KeClearEvent(context->pSharedRequestEvent);
+		KeClearEvent(params->pSharedRequestEvent);
 		DPRINT("[+] Event received and cleared.\n");
 		DPRINT("Request type: %d\n", request->operationType);
 
@@ -217,12 +216,12 @@ VOID RequestHandler(PVOID parameter)
 		// Unload request
 		case Unload:
 			DPRINT("Unload request received.\n");
-			UnloadDriver(context);
+			UnloadDriver(params);
 			goto cleanup;
 		}
 
 		// Notify user-mode process that processing has completed
-		KeSetEvent(context->pSharedCompletionEvent, IO_NO_INCREMENT, FALSE);
+		KeSetEvent(params->pSharedCompletionEvent, IO_NO_INCREMENT, FALSE);
 	}
 
 cleanup:
@@ -257,56 +256,8 @@ PVOID FindPattern(PVOID start, SIZE_T length, LPCSTR pattern, LPCSTR mask) {
 	return NULL;
 }
 
-NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath) {
-	UNREFERENCED_PARAMETER(pDriverObject);
-	UNREFERENCED_PARAMETER(pRegistryPath);
-
+PVOID FindDiscardableSection(SIZE_T minSize) {
 	NTSTATUS status;
-
-	PVOID pSharedSection;
-	HANDLE hSection;
-
-	PKEVENT pSharedRequestEvent;
-	HANDLE hRequestEvent;
-	PKEVENT pSharedCompletionEvent;
-	HANDLE hCompletionEvent;
-
-	PVOID kernelBaseAddress = *(VOID**)((ULONG_PTR)PsLoadedModuleList + 0x30);
-	SIZE_T kernelBaseSize = *(SIZE_T*)((ULONG_PTR)PsLoadedModuleList + 0x40);
-	MiGetPteAddress = (PMMPTE (*)(PVOID))FindPattern(kernelBaseAddress, kernelBaseSize, "\x48\xC1\xE9\x09\x48\xB8\xF8\xFF\xFF\xFF\x7F\x00\x00\x00\x48\x23\xC8\x48\xB8\x00\x00\x00\x00\x00\x00\x00\x00\x48\x03\xC1\xC3", "xxxxxxxxxxxxxxxxxxx????????xxxx");
-	if (MiGetPteAddress == NULL) {
-		DPRINT("MiGetPteAddress is null\n");
-	}
-
-	DPRINT("[>] UnloadDriver: %p\n", UnloadDriver);
-	DPRINT("[>] RequestHandler: %p\n", RequestHandler);
-	DPRINT("[>] DriverEntry: %p\n", DriverEntry);
-
-	// Locate the DOS and NT headers of our driver image to find its size
-	// Find DOS header
-	PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)((ULONG_PTR)DriverEntry - 0x1000);
-	while (dosHeader->e_magic != 'ZM') {
-		dosHeader -= 0x1000;
-	}
-	
-	DPRINT("dos header address: %p\n", dosHeader);
-	DPRINT("dos header magic: %.*s\n", 2, &dosHeader->e_magic);
-
-	// Find NT header
-	PIMAGE_NT_HEADERS64 ntHeader = (PIMAGE_NT_HEADERS64)((ULONG_PTR)dosHeader + dosHeader->e_lfanew);
-	if (ntHeader->Signature != 'EP') {
-		DPRINT("nt header magic incorrect.\n");
-	}
-	else if (ntHeader->OptionalHeader.Magic != 0x20B) {
-		DPRINT("image not 64 bit.\n");
-	}
-
-	DPRINT("nt header address: %p\n", ntHeader);
-	DPRINT("nt header magic: %.*s\n", 4, &ntHeader->Signature);
-	DPRINT("optional header magic: 0x%hx\n", ntHeader->OptionalHeader.Magic);
-	DPRINT("image size: 0x%lx\n", ntHeader->OptionalHeader.SizeOfImage);
-	DPRINT("entry point offset: 0x%lx\n", ntHeader->OptionalHeader.AddressOfEntryPoint);
-	DPRINT("size of headers: 0x%lx\n", ntHeader->OptionalHeader.SizeOfHeaders);
 
 	// Find discardable section to hijack (Source: https://www.unknowncheats.me/forum/anti-cheat-bypass/327295-driver-discardable-section-device-dispatch-hijacking-bypass.html)
 	// First, iterate all driver objects (Source: https://www.unknowncheats.me/forum/c-and-c-/274073-iterating-driver_objects.html)
@@ -318,7 +269,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	status = ZwOpenDirectoryObject(&directoryHandle, DIRECTORY_ALL_ACCESS, &dirAttributes);
 	if (!NT_SUCCESS(status)) {
 		DPRINT("ZwOpenDirectoryObject failed.\n");
-		return STATUS_DRIVER_UNABLE_TO_LOAD;
+		return NULL;
 	}
 
 	POBJECT_DIRECTORY directoryObject;
@@ -326,7 +277,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	if (!NT_SUCCESS(status)) {
 		ZwClose(directoryHandle);
 		DPRINT("ObReferenceObjectByHandle failed.\n");
-		return STATUS_DRIVER_UNABLE_TO_LOAD;
+		return NULL;
 	}
 
 	PIMAGE_SECTION_HEADER discardableSectionHeader = NULL;
@@ -345,7 +296,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 			for (PIMAGE_SECTION_HEADER section = firstSection; section < firstSection + driverNtHeader->FileHeader.NumberOfSections; section++)
 			{
 				// assume INIT section is RWX - implement assert
-				if (section->Characteristics & 0x02000000 && section->Misc.VirtualSize >= ntHeader->OptionalHeader.SizeOfImage) // IMAGE_SCN_MEM_DISCARDABLE
+				if (section->Characteristics & 0x02000000 && section->Misc.VirtualSize >= minSize) // IMAGE_SCN_MEM_DISCARDABLE
 				{
 					DPRINT("    Section @ %p\n    Size: 0x%lx\n", section, section->Misc.VirtualSize);
 
@@ -362,16 +313,166 @@ sectionFound:
 	ObDereferenceObject(directoryObject);
 	ZwClose(directoryHandle);
 
-	if (!discardableSectionHeader) {
-		DPRINT("appropriate discardable section not found\n");
+	if (discardableSectionHeader) {
+		DPRINT("usable discardable section found @ 0x%p\n", discardableSectionHeader);
+		return (PVOID)((ULONG_PTR)targetDriverObject->DriverStart + discardableSectionHeader->VirtualAddress);
+	}
+	DPRINT("usable discardable section not found.", discardableSectionHeader);
+	return NULL;
+}
+
+BOOLEAN LocatePiDDB(PERESOURCE* lock, PRTL_AVL_TABLE* table) {
+	PVOID pLock = NULL, pTable = NULL;
+
+	pLock = FindPattern(kernelBaseAddress, kernelBaseSize, "\x48\x8D\x0D\x00\x00\x00\x00\xE8\x00\x00\x00\x00\x4C\x8B\x8C", "xxx????x????xxx");
+	if (!pLock) {
+		DPRINT("Unable to find pointer to PiDDBLock.\n");
+		return FALSE;
+	}
+
+	pTable = FindPattern(kernelBaseAddress, kernelBaseSize, "\x66\x03\xD2\x48\x8D\x0D", "xxxxxx");
+	if (!pTable) {
+		DPRINT("Unable to find pointer to PiDDBCacheTable.\n");
+		return FALSE;
+	}
+
+	pTable = (PVOID)((ULONG_PTR)pTable + 3);
+
+	*lock = (PERESOURCE)ResolveRelativeAddress(pLock, 3, 7);
+	*table = (PRTL_AVL_TABLE)ResolveRelativeAddress(pTable, 3, 7);
+
+	return TRUE;
+}
+
+BOOLEAN ClearPiDDBCacheTable() {
+	// Source: https://www.unknowncheats.me/forum/anti-cheat-bypass/324665-clearing-piddbcachetable.html
+	PERESOURCE piDDBLock;
+	PRTL_AVL_TABLE piDDBCacheTable;
+	
+	if (!LocatePiDDB(&piDDBLock, &piDDBCacheTable)) {
+		DPRINT("LocatePiDDB failed.\n");
+		return FALSE;
+	}
+
+	UNICODE_STRING kdmapperName = RTL_CONSTANT_STRING(L"iqvw64e.sys");
+	PiDDBCacheEntry kdmapperEntry = { 0 };
+	kdmapperEntry.DriverName = kdmapperName;
+	kdmapperEntry.TimeDateStamp = 0x5284EAC3;
+
+	UNICODE_STRING capcomName = RTL_CONSTANT_STRING(L"capcom.sys");
+	PiDDBCacheEntry capcomEntry = { 0 };
+	capcomEntry.DriverName = capcomName;
+	capcomEntry.TimeDateStamp = 0x57CD1415;
+
+	ExAcquireResourceExclusiveLite(piDDBLock, TRUE);
+
+	// Iterate table elements (https://github.com/ApexLegendsUC/anti-cheat-emulator/blob/master/Source.cpp#L618)
+	//for (PiDDBCacheEntry* p = RtlEnumerateGenericTableAvl(piDDBCacheTable, TRUE); p != NULL; p = RtlEnumerateGenericTableAvl(piDDBCacheTable, FALSE)) {
+	//	if (p->TimeDateStamp == 0x5284eac3) {
+	//		DPRINT("kdmapper detected, driver: %wZ\n", p->DriverName);
+	//	}
+	//	else if (p->TimeDateStamp == 0x57CD1415) {
+	//		DPRINT("drvmap detected, driver: %wZ\n", p->DriverName);
+	//	}
+	//}
+
+	PiDDBCacheEntry* pFoundEntry = RtlLookupElementGenericTableAvl(piDDBCacheTable, &kdmapperEntry);
+	if (pFoundEntry) {
+		RemoveEntryList(&pFoundEntry->List);
+		if (RtlDeleteElementGenericTableAvl(piDDBCacheTable, pFoundEntry)) {
+			DPRINT("kdmapper detected and cleared.\n");
+		}
+		else {
+			DPRINT("failed to delete element from table.");
+		}
+	}
+
+	pFoundEntry = RtlLookupElementGenericTableAvl(piDDBCacheTable, &capcomEntry);
+	if (pFoundEntry) {
+		RemoveEntryList(&pFoundEntry->List);
+		if (RtlDeleteElementGenericTableAvl(piDDBCacheTable, pFoundEntry)) {
+			DPRINT("drvmap detected and cleared.\n");
+		}
+		else {
+			DPRINT("failed to delete element from table.");
+		}
+	}
+
+	ExReleaseResourceLite(piDDBLock);
+	return TRUE;
+}
+
+NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath) {
+	UNREFERENCED_PARAMETER(pDriverObject);
+	UNREFERENCED_PARAMETER(pRegistryPath);
+
+	kernelBaseAddress = *(VOID**)((ULONG_PTR)PsLoadedModuleList + 0x30);
+	kernelBaseSize = *(SIZE_T*)((ULONG_PTR)PsLoadedModuleList + 0x40);
+
+	NTSTATUS status;
+
+	PVOID pSharedSection;
+	HANDLE hSection;
+
+	PKEVENT pSharedRequestEvent, pSharedCompletionEvent;
+	HANDLE hRequestEvent, hCompletionEvent;
+
+	DPRINT("[>] UnloadDriver: %p\n", UnloadDriver);
+	DPRINT("[>] RequestHandler: %p\n", RequestHandler);
+	DPRINT("[>] DriverEntry: %p\n", DriverEntry);
+
+	DPRINT("Clearing PiDDBCacheTable...\n");
+	if (ClearPiDDBCacheTable()) {
+		DPRINT("Clear successful.\n");
+	}
+	else {
+		DPRINT("Clear unsuccessful.\n");
+	}
+
+	// Locate MiGetPteAddress
+	MiGetPteAddress = (PMMPTE(*)(PVOID))FindPattern(kernelBaseAddress, kernelBaseSize, "\x48\xC1\xE9\x09\x48\xB8\xF8\xFF\xFF\xFF\x7F\x00\x00\x00\x48\x23\xC8\x48\xB8\x00\x00\x00\x00\x00\x00\x00\x00\x48\x03\xC1\xC3", "xxxxxxxxxxxxxxxxxxx????????xxxx");
+	if (!MiGetPteAddress) {
+		DPRINT("MiGetPteAddress is null\n");
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
-	
-	DPRINT("discardable section found @ 0x%p\n", discardableSectionHeader);
 
-	PVOID discardableSection = (PVOID)((ULONG_PTR)targetDriverObject->DriverStart + discardableSectionHeader->VirtualAddress);
+	// Locate the DOS and NT headers of our driver image to find its size, iterating by PAGE_SIZE
+	// Find DOS header
+	ULONG_PTR driverEntryAligned = (ULONG_PTR)DriverEntry;
+	driverEntryAligned -= driverEntryAligned % PAGE_SIZE;
+
+	PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)((ULONG_PTR)driverEntryAligned - PAGE_SIZE);
+	while (dosHeader->e_magic != 'ZM') {
+		dosHeader = (PIMAGE_DOS_HEADER)((ULONG_PTR)dosHeader - PAGE_SIZE);
+	}
+	
+	DPRINT("\ndos header address: %p\n", dosHeader);
+	DPRINT("dos header magic: %.*s\n", 2, &dosHeader->e_magic);
+	
+	// Find NT header
+	PIMAGE_NT_HEADERS64 ntHeader = (PIMAGE_NT_HEADERS64)((ULONG_PTR)dosHeader + dosHeader->e_lfanew);
+	if (ntHeader->Signature != 'EP') {
+		DPRINT("nt header magic incorrect.\n");
+	}
+	else if (ntHeader->OptionalHeader.Magic != 0x20B) {
+		DPRINT("image not 64 bit.\n");
+	}
+	
+	DPRINT("\nnt header address: %p\n", ntHeader);
+	DPRINT("nt header magic: %.*s\n", 4, &ntHeader->Signature);
+	DPRINT("optional header magic: 0x%hx\n", ntHeader->OptionalHeader.Magic);
+	DPRINT("image size: 0x%lx\n", ntHeader->OptionalHeader.SizeOfImage);
+	DPRINT("entry point offset: 0x%lx\n", ntHeader->OptionalHeader.AddressOfEntryPoint);
+	DPRINT("size of headers: 0x%lx\n", ntHeader->OptionalHeader.SizeOfHeaders);
+	
+	// Find discardable section to be hijacked
+	PVOID discardableSection = FindDiscardableSection(ntHeader->OptionalHeader.SizeOfImage);
+	if (!discardableSection) {
+		return STATUS_DRIVER_UNABLE_TO_LOAD;
+	}
+
 	// Allocate buffer for new discardable section
-	PVOID discardableAllocatedBuffer = ExAllocatePool(NonPagedPoolExecute, ROUND_TO_PAGES(ntHeader->OptionalHeader.SizeOfImage));
+	PVOID discardableAllocatedBuffer = ExAllocatePool(NonPagedPoolExecute, ROUND_TO_PAGES(ntHeader->OptionalHeader.SizeOfImage - ntHeader->OptionalHeader.SizeOfHeaders));
 	if (!discardableAllocatedBuffer) {
 		DPRINT("ExAllocatePool for discardableAllocatedBuffer failed.\n");
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
@@ -389,11 +490,8 @@ sectionFound:
 		*discardableSectionPte = *discardableAllocatedBufferPte;
 	}
 
-	memcpy(discardableSection, (PVOID)dosHeader, ntHeader->OptionalHeader.SizeOfImage);
-	// Erase headers
-	RtlZeroMemory(discardableSection, ntHeader->OptionalHeader.SizeOfHeaders);
-
-	DPRINT("sections copied, headers erased.\n");
+	memcpy(discardableSection, (PVOID)((ULONG_PTR)dosHeader + ntHeader->OptionalHeader.SizeOfHeaders), ntHeader->OptionalHeader.SizeOfImage - ntHeader->OptionalHeader.SizeOfHeaders);
+	DPRINT("sections copied without headers.\n");
 
 	// Create names from GUID
 	UNICODE_STRING sectionName = RTL_CONSTANT_STRING(L"\\BaseNamedObjects\\" GUID_SECTION);
@@ -411,7 +509,7 @@ sectionFound:
 	InitializeObjectAttributes(&objAttributes, &sectionName, OBJ_KERNEL_HANDLE, NULL, NULL);
 
 	LARGE_INTEGER lMaxSize = { 0 };
-	lMaxSize.QuadPart = sizeof(_KERNEL_OPERATION_REQUEST);
+	lMaxSize.QuadPart = sizeof(KERNEL_OPERATION_REQUEST);
 	status = ZwCreateSection(&hSection, SECTION_ALL_ACCESS, &objAttributes, &lMaxSize, PAGE_READWRITE, SEC_COMMIT, NULL);
 	if (!NT_SUCCESS(status))
 	{
@@ -457,28 +555,26 @@ sectionFound:
 	KeClearEvent(pSharedRequestEvent);
 	KeClearEvent(pSharedCompletionEvent);
 
-	// Start request handler in new thread
-
-	// Initialize context structure so new thread can access events and shared section (new thread can't access our global variables since it's in a different area)
-	PREQUEST_HANDLER_CONTEXT context = ExAllocatePool(NonPagedPoolNx, sizeof(REQUEST_HANDLER_CONTEXT));
-	if (!context) {
-		DPRINT("ExAllocatePool for PREQUEST_HANDLER_CONTEXT failed.\n");
+	// Initialize params structure so new thread can access events and shared section
+	PREQUEST_HANDLER_PARAMS params = ExAllocatePool(NonPagedPoolNx, sizeof(REQUEST_HANDLER_PARAMS));
+	if (!params) {
+		DPRINT("ExAllocatePool for PREQUEST_HANDLER_PARAMS failed.\n");
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
-	context->hCompletionEvent = hCompletionEvent;
-	context->hRequestEvent = hRequestEvent;
-	context->hSection = hSection;
-	context->pSharedCompletionEvent = pSharedCompletionEvent;
-	context->pSharedRequestEvent = pSharedRequestEvent;
-	context->pSharedSection = pSharedSection;
+	params->hCompletionEvent = hCompletionEvent;
+	params->hRequestEvent = hRequestEvent;
+	params->hSection = hSection;
+	params->pSharedCompletionEvent = pSharedCompletionEvent;
+	params->pSharedRequestEvent = pSharedRequestEvent;
+	params->pSharedSection = pSharedSection;
 
-	DPRINT("context @ 0x%p\n", context);
+	DPRINT("context @ 0x%p\n", params);
 
-	// Create new system thread, pass in our initialized context
+	// Create new system thread, pass in our initialized params
 	HANDLE hThread;
 	OBJECT_ATTRIBUTES threadAttributes = { 0 };
 	InitializeObjectAttributes(&threadAttributes, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
-	status = PsCreateSystemThread(&hThread, THREAD_ALL_ACCESS, &threadAttributes, NULL, NULL, (PKSTART_ROUTINE)((ULONG_PTR)RequestHandler - (ULONG_PTR)dosHeader + (ULONG_PTR)discardableSection), (PVOID)context);
+	status = PsCreateSystemThread(&hThread, THREAD_ALL_ACCESS, &threadAttributes, NULL, NULL, (PKSTART_ROUTINE)((ULONG_PTR)RequestHandler - ((ULONG_PTR)dosHeader + ntHeader->OptionalHeader.SizeOfHeaders) + (ULONG_PTR)discardableSection), params);
 	if (!NT_SUCCESS(status))
 	{
 		DPRINT("[-] PsCreateSystemThread fail! Status: %p\n", status);

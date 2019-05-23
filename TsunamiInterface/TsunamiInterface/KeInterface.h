@@ -20,6 +20,7 @@ struct _KERNEL_OPERATION_REQUEST
 {
 	Operation operationType;
 	BOOLEAN success;
+	BOOLEAN completed;
 	ULONG64 processID;
 	ULONG_PTR address;
 	SIZE_T size;
@@ -84,9 +85,13 @@ public:
 		request->processID = pid;
 		request->address = readAddress;
 		request->size = size;
+		request->completed = FALSE;
 
-		SignalObjectAndWait(hRequestEvent, hCompletionEvent, INFINITE, FALSE);
-		ResetEvent(hCompletionEvent);
+		SetEvent(hRequestEvent);
+
+		while (!request->completed) {
+			Sleep(0);
+		}
 
 		if (request->success) {
 			memcpy(buffer, request->data, size);
@@ -105,9 +110,13 @@ public:
 		request->address = writeAddress;
 		request->size = size;
 		memcpy(request->data, buffer, size);
+		request->completed = FALSE;
 
-		SignalObjectAndWait(hRequestEvent, hCompletionEvent, INFINITE, FALSE);
-		ResetEvent(hCompletionEvent);
+		SetEvent(hRequestEvent);
+
+		while (!request->completed) {
+			Sleep(0);
+		}
 
 		return request->success;
 	}
@@ -116,9 +125,13 @@ public:
 		request->operationType = Operation::GetModule;
 		request->processID = pid;
 		wcscpy_s((wchar_t*)request->data, sizeof(request->data), moduleName);
+		request->completed = FALSE;
 
-		SignalObjectAndWait(hRequestEvent, hCompletionEvent, INFINITE, FALSE);
-		ResetEvent(hCompletionEvent);
+		SetEvent(hRequestEvent);
+
+		while (!request->completed) {
+			Sleep(0);
+		}
 
 		*base = *(ULONG_PTR*)request->data;
 

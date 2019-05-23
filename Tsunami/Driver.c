@@ -9,7 +9,6 @@
 
 #define GUID_SECTION L"{3FE2EC3F-7CAF-43AF-878F-85612D10AB6B}"
 #define GUID_REQUEST_EVENT L"{9399F41C-E15B-4A95-8B1C-7A9EF219F61E}"
-#define GUID_COMPLETION_EVENT L"{E60F327F-4C6F-4790-9E31-83862DF81EC2}"
 
 typedef enum Operation {
 	Read,
@@ -23,14 +22,13 @@ typedef struct _REQUEST_HANDLER_PARAMS {
 	HANDLE hSection;
 	PKEVENT pSharedRequestEvent;
 	HANDLE hRequestEvent;
-	PKEVENT pSharedCompletionEvent;
-	HANDLE hCompletionEvent;
 } REQUEST_HANDLER_PARAMS, *PREQUEST_HANDLER_PARAMS;
 
 typedef struct _KERNEL_OPERATION_REQUEST
 {
 	Operation operationType;
 	BOOLEAN success;
+	BOOLEAN completed;
 	ULONG64 processID;
 	ULONG_PTR address;
 	SIZE_T size;
@@ -105,14 +103,10 @@ VOID UnloadDriver(PREQUEST_HANDLER_PARAMS context) {
 		DPRINT("Handle to section closed.\n");
 	}
 
-	// Close handles to events
+	// Close handles to event
 	if (context->hRequestEvent) {
 		ZwClose(context->hRequestEvent);
 		DPRINT("Handle to request event closed.\n");
-	}
-	if (context->hCompletionEvent) {
-		ZwClose(context->hCompletionEvent);
-		DPRINT("Handle to completion event closed.\n");
 	}
 
 	ExFreePool(context);
@@ -136,9 +130,7 @@ VOID RequestHandler(PVOID parameter)
 		DPRINT("\n[+] Waiting for request event...\n");
 		status = KeWaitForSingleObject(params->pSharedRequestEvent, Executive, KernelMode, FALSE, NULL);
 
-		// Clear event once received
-		KeClearEvent(params->pSharedRequestEvent);
-		DPRINT("[+] Event received and cleared.\n");
+		DPRINT("[+] Event received.\n");
 		DPRINT("Request type: %d\n", request->operationType);
 
 		switch (request->operationType) {
@@ -221,7 +213,7 @@ VOID RequestHandler(PVOID parameter)
 		}
 
 		// Notify user-mode process that processing has completed
-		KeSetEvent(params->pSharedCompletionEvent, IO_NO_INCREMENT, FALSE);
+		request->completed = TRUE;
 	}
 
 cleanup:
@@ -496,11 +488,9 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	// Create names from GUID
 	UNICODE_STRING sectionName = RTL_CONSTANT_STRING(L"\\BaseNamedObjects\\" GUID_SECTION);
 	UNICODE_STRING requestEventName = RTL_CONSTANT_STRING(L"\\BaseNamedObjects\\" GUID_REQUEST_EVENT);
-	UNICODE_STRING completionEventName = RTL_CONSTANT_STRING(L"\\BaseNamedObjects\\" GUID_COMPLETION_EVENT);
 
 	DPRINT("[>] Section name: %wZ\n", &sectionName);
 	DPRINT("[>] Request event name: %wZ\n", &requestEventName);
-	DPRINT("[>] Completion event name: %wZ\n", &completionEventName);
 
 	// Create shared memory
 	DPRINT("[+] Creating shared memory...\n");
@@ -541,19 +531,16 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 	// Dereference shared section object
 	ObDereferenceObject(pContextSharedSection);
 
-	// Create named events
-	pSharedRequestEvent = IoCreateNotificationEvent(&requestEventName, &hRequestEvent);
-	pSharedCompletionEvent = IoCreateNotificationEvent(&completionEventName, &hCompletionEvent);
+	// Create named event
+	pSharedRequestEvent = IoCreateSynchronizationEvent(&requestEventName, &hRequestEvent);
 
-	if (!pSharedRequestEvent || !pSharedCompletionEvent) {
-		DPRINT("[-] IoCreateNotificationEvent failed.\n");
+	if (!pSharedRequestEvent) {
+		DPRINT("[-] IoCreateSynchronizationEvent failed.\n");
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
-	DPRINT("[+] IoCreateNotificationEvent completed.\n");
+	DPRINT("[+] IoCreateSynchronizationEvent completed.\n");
 
-	// Clear events since they start in the signaled state
 	KeClearEvent(pSharedRequestEvent);
-	KeClearEvent(pSharedCompletionEvent);
 
 	// Initialize params structure so new thread can access events and shared section
 	PREQUEST_HANDLER_PARAMS params = ExAllocatePool(NonPagedPoolNx, sizeof(REQUEST_HANDLER_PARAMS));
@@ -561,10 +548,8 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 		DPRINT("ExAllocatePool for PREQUEST_HANDLER_PARAMS failed.\n");
 		return STATUS_DRIVER_UNABLE_TO_LOAD;
 	}
-	params->hCompletionEvent = hCompletionEvent;
 	params->hRequestEvent = hRequestEvent;
 	params->hSection = hSection;
-	params->pSharedCompletionEvent = pSharedCompletionEvent;
 	params->pSharedRequestEvent = pSharedRequestEvent;
 	params->pSharedSection = pSharedSection;
 
